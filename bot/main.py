@@ -77,7 +77,7 @@ def get_day_keyboard(year, month):
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton(text="➕ Добавить вручную", callback_data="menu_add")],
-        [InlineKeyboardButton(text="👤 Выбрать из контактов", callback_data="menu_contact")],
+        [InlineKeyboardButton(text="👤 Выбрать контакт", callback_data="menu_contact")],
         [InlineKeyboardButton(text="📅 Мой список", callback_data="menu_list")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -90,21 +90,29 @@ async def cmd_start(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "menu_add")
 async def menu_add_manual(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddBirthday.waiting_for_name)
-    await callback.message.edit_text("📝 <b>Шаг 1: Имя и Тег</b>\n\nВведите имя человека.\n<i>Можно также добавить @username, чтобы я мог тегнуть его в уведомлении.</i>\n\nПример: <code>Иван @vanya</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_start")]]))
+    await callback.message.edit_text("📝 <b>Шаг 1: Имя и Тег</b>\n\nВведите имя человека.\n<i>Добавьте @тег через пробел, чтобы сделать имя ссылкой.</i>\n\nПример: <code>Иван @vanya</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_start")]]))
     await callback.answer()
 
 @dp.callback_query(F.data == "menu_contact")
 async def menu_add_contact(callback: CallbackQuery):
     from aiogram.types import KeyboardButtonRequestUsers
-    kb = [[KeyboardButton(text="👤 Выбрать контакт", request_users=KeyboardButtonRequestUsers(request_id=1, user_count=1))]]
+    kb = [[KeyboardButton(text="👤 Выбрать контакт из книги", request_users=KeyboardButtonRequestUsers(request_id=1, user_count=1))]]
     markup = ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
-    await callback.message.answer("Выберите человека из вашей записной книжки:", reply_markup=markup)
+    await callback.message.answer("Нажмите кнопку ниже, чтобы выбрать контакт из вашей записной книжки:", reply_markup=markup)
     await callback.answer()
 
 @dp.message(F.user_shared)
 async def process_shared_user(message: Message, state: FSMContext):
     await state.set_state(AddBirthday.waiting_for_name)
-    await message.answer("✅ Контакт выбран!\n\nТеперь введите <b>имя</b> для этого человека (и по желанию @тег):", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("✅ Контакт выбран!\n\nТеперь введите <b>имя</b> для этого человека.\n💡 <i>Добавьте @username для создания ссылки.</i>", reply_markup=types.ReplyKeyboardRemove())
+
+@dp.message(F.contact)
+async def process_contact(message: Message, state: FSMContext):
+    contact = message.contact
+    name = f"{contact.first_name} {contact.last_name or ''}".strip()
+    await state.update_data(name=name)
+    await state.set_state(AddBirthday.waiting_for_decade)
+    await message.answer(f"✅ Контакт получен: <b>{name}</b>\n\nВы можете оставить это имя или ввести новое с @тегом.\nЕсли имя верное, просто выберите <b>десятилетие</b> рождения ниже:", reply_markup=get_decade_keyboard())
 
 @dp.message(AddBirthday.waiting_for_name)
 async def process_name(message: Message, state: FSMContext):
@@ -170,13 +178,9 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
     if not user_birthdays:
         await callback.message.edit_text("ℹ️ В вашем списке пока нет записей.", reply_markup=get_main_menu())
         return
-    
-    # Sort alphabetically by name
     user_birthdays.sort(key=lambda x: x[1].lower())
-    
     text = "📅 <b>Ваш список дней рождения:</b>\n\n"
     now = datetime.datetime.now()
-    
     for i, (_, b_name, b_date, b_tag) in enumerate(user_birthdays, 1):
         try:
             bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
@@ -184,23 +188,15 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
             if target_date < now.replace(hour=0, minute=0, second=0):
                 target_date = target_date.replace(year=now.year + 1)
             age = target_date.year - bday_dt.year
-            
-            # Create a clickable link if tag exists
             if b_tag:
                 clean_tag = b_tag.lstrip('@')
                 name_display = f'<a href="https://t.me/{clean_tag}">{b_name}</a>'
             else:
                 name_display = f'<b>{b_name}</b>'
-
-            # Format: 1. Name — 27.02.2005 (21)
             text += f"{i}. {name_display} — <code>{b_date}</code> (<b>{age}</b>)\n"
         except Exception:
             text += f"{i}. <b>{b_name}</b> — <code>{b_date}</code>\n"
-    
-    keyboard = [
-        [InlineKeyboardButton(text="🗑 Удалить по номеру", callback_data="menu_delete_index")],
-        [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")]
-    ]
+    keyboard = [[InlineKeyboardButton(text="🗑 Удалить по номеру", callback_data="menu_delete_index")], [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")]]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), disable_web_page_preview=True)
     await callback.answer()
 
