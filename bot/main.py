@@ -170,8 +170,13 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
     if not user_birthdays:
         await callback.message.edit_text("ℹ️ В вашем списке пока нет записей.", reply_markup=get_main_menu())
         return
+    
     user_birthdays.sort(key=lambda x: x[1].lower())
-    text = "📅 <b>Ваш список:</b>\n<i>(по алфавиту)</i>\n\n"
+    
+    text = "📅 <b>Ваш список дней рождения:</b>\n"
+    text += "<code>#  | Имя            | Дата       | Возраст</code>\n"
+    text += "<code>------------------------------------------</code>\n"
+    
     now = datetime.datetime.now()
     for i, (_, b_name, b_date, b_tag) in enumerate(user_birthdays, 1):
         try:
@@ -180,10 +185,19 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
             if target_date < now.replace(hour=0, minute=0, second=0):
                 target_date = target_date.replace(year=now.year + 1)
             age = target_date.year - bday_dt.year
-            tag_str = f" ({b_tag})" if b_tag else ""
-            text += f"{i}. <b>{b_name}</b>{tag_str}: {b_date} (<b>{age}</b> л.)\n"
+            
+            # Formatting name with tag
+            full_name = b_name
+            if b_tag:
+                full_name += f" ({b_tag})"
+            
+            # Truncate long names for table appearance
+            display_name = (full_name[:14] + '..') if len(full_name) > 16 else full_name.ljust(16)
+            
+            text += f"<code>{i:<2} | {display_name} | {b_date} | ({age})</code>\n"
         except Exception:
-            text += f"{i}. <b>{b_name}</b>: {b_date}\n"
+            text += f"<code>{i:<2} | {b_name[:16]:<16} | {b_date} | --</code>\n"
+    
     keyboard = [
         [InlineKeyboardButton(text="🗑 Удалить запись", callback_data="menu_delete_index")],
         [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")]
