@@ -1,4 +1,3 @@
-aiogram>=3.0.0
+aiogram>=3.25.0
 apscheduler
 python-dotenv
-sqlite3
