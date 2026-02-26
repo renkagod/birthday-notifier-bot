@@ -84,6 +84,33 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+def get_birthdays_list_text(user_id):
+    birthdays = get_all_birthdays()
+    user_birthdays = [b for b in birthdays if b[0] == user_id]
+    if not user_birthdays:
+        return None
+    
+    user_birthdays.sort(key=lambda x: x[1].lower())
+    text = "📅 <b>Ваш список дней рождения:</b>\n\n"
+    now = datetime.datetime.now()
+    
+    for i, (_, b_name, b_date, b_tag) in enumerate(user_birthdays, 1):
+        try:
+            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
+            target_date = bday_dt.replace(year=now.year)
+            if target_date < now.replace(hour=0, minute=0, second=0):
+                target_date = target_date.replace(year=now.year + 1)
+            age = target_date.year - bday_dt.year
+            if b_tag:
+                clean_tag = b_tag.lstrip('@')
+                name_display = f'<a href="https://t.me/{clean_tag}">{b_name}</a>'
+            else:
+                name_display = f'<b>{b_name}</b>'
+            text += f"{i}. {name_display} — <code>{b_date}</code> (<b>{age}</b>)\n"
+        except Exception:
+            text += f"{i}. <b>{b_name}</b> — <code>{b_date}</code>\n"
+    return text
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -175,29 +202,11 @@ async def process_day_selection(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "menu_list")
 async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    birthdays = get_all_birthdays()
-    user_birthdays = [b for b in birthdays if b[0] == callback.from_user.id]
-    if not user_birthdays:
+    text = get_birthdays_list_text(callback.from_user.id)
+    if not text:
         await callback.message.edit_text("ℹ️ В вашем списке пока нет записей.", reply_markup=get_main_menu())
         return
-    user_birthdays.sort(key=lambda x: x[1].lower())
-    text = "📅 <b>Ваш список дней рождения:</b>\n\n"
-    now = datetime.datetime.now()
-    for i, (_, b_name, b_date, b_tag) in enumerate(user_birthdays, 1):
-        try:
-            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
-            target_date = bday_dt.replace(year=now.year)
-            if target_date < now.replace(hour=0, minute=0, second=0):
-                target_date = target_date.replace(year=now.year + 1)
-            age = target_date.year - bday_dt.year
-            if b_tag:
-                clean_tag = b_tag.lstrip('@')
-                name_display = f'<a href="https://t.me/{clean_tag}">{b_name}</a>'
-            else:
-                name_display = f'<b>{b_name}</b>'
-            text += f"{i}. {name_display} — <code>{b_date}</code> (<b>{age}</b>)\n"
-        except Exception:
-            text += f"{i}. <b>{b_name}</b> — <code>{b_date}</code>\n"
+    
     keyboard = [
         [InlineKeyboardButton(text="🗑 Удалить запись", callback_data="menu_delete_index")],
         [InlineKeyboardButton(text="✏️ Изменить (Имя/Тег)", callback_data="menu_edit_index")],
@@ -209,9 +218,13 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "menu_delete_index")
 async def delete_index_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddBirthday.waiting_for_delete_index)
+    list_text = get_birthdays_list_text(callback.from_user.id)
+    prompt = "\n🗑 <b>Удаление</b>\nВведите <b>номер</b> записи из списка для удаления:"
     await callback.message.edit_text(
-        "🗑 <b>Удаление</b>\n\nВведите <b>номер</b> записи из списка для удаления:", 
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]))
+        list_text + prompt, 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]),
+        disable_web_page_preview=True
+    )
     await callback.answer()
 
 @dp.message(AddBirthday.waiting_for_delete_index)
@@ -235,9 +248,13 @@ async def process_delete_index(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "menu_edit_index")
 async def edit_index_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddBirthday.waiting_for_edit_index)
+    list_text = get_birthdays_list_text(callback.from_user.id)
+    prompt = "\n✏️ <b>Редактирование</b>\nВведите <b>номер</b> записи, которую хотите изменить:"
     await callback.message.edit_text(
-        "✏️ <b>Редактирование</b>\n\nВведите <b>номер</b> записи, которую хотите изменить:", 
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]))
+        list_text + prompt, 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]),
+        disable_web_page_preview=True
+    )
     await callback.answer()
 
 @dp.message(AddBirthday.waiting_for_edit_index)
