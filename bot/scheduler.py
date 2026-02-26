@@ -36,7 +36,9 @@ async def check_birthdays(bot):
             # Short-term (minutes) vs Long-term (days at specific time)
             diff = target_date - now
             diff_minutes = int(diff.total_seconds() / 60)
-            diff_days = diff.days
+            
+            now_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            diff_days = (target_date - now_date).days
 
             msg = None
             

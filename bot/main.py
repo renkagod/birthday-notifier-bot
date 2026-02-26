@@ -129,12 +129,44 @@ async def upcoming_birthdays(callback: CallbackQuery):
     birthdays = get_all_birthdays()
     user_birthdays = [b for b in birthdays if b[0] == callback.from_user.id]
     if not user_birthdays: return await callback.message.edit_text("ℹ️ Список пуст.", reply_markup=get_main_menu())
-    now = datetime.datetime.now()
-    this_month = sorted([ (b[1], b[2], b[3], datetime.datetime.strptime(b[2], "%d.%m.%Y").day) for b in user_birthdays if datetime.datetime.strptime(b[2], "%d.%m.%Y").month == now.month ], key=lambda x: x[3])
-    if not this_month: text = "📅 <b>В этом месяце именинников нет.</b>"
+    
+    now = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    upcoming = []
+    
+    for _, name, b_date, tag in user_birthdays:
+        try:
+            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
+            target_date = bday_dt.replace(year=now.year)
+            if target_date < now:
+                target_date = target_date.replace(year=now.year + 1)
+            
+            days_until = (target_date - now).days
+            if days_until <= 30: # Показываем на ближайшие 30 дней
+                upcoming.append({
+                    'name': name,
+                    'date': target_date,
+                    'tag': tag,
+                    'days_until': days_until,
+                    'age': target_date.year - bday_dt.year
+                })
+        except Exception: continue
+        
+    upcoming.sort(key=lambda x: x['days_until'])
+    
+    if not upcoming:
+        text = "📅 <b>В ближайшие 30 дней именинников нет.</b>"
     else:
-        text = f"🎁 <b>Именинники в {MONTHS_RU_NAME.get(now.month)}:</b>\n\n"
-        for name, b_date, tag, day in this_month: text += f"• <b>{day:02d}.{now.month:02d}</b> — <b>{name}</b>{f' ({tag})' if tag else ''}\n"
+        text = "🔥 <b>Ближайшие дни рождения:</b>\n\n"
+        for item in upcoming:
+            date_str = item['date'].strftime("%d.%m")
+            days_text = ""
+            if item['days_until'] == 0: days_text = " (<b>Сегодня!</b> 🥳)"
+            elif item['days_until'] == 1: days_text = " (Завтра!)"
+            else: days_text = f" (через {item['days_until']} дн.)"
+            
+            tag_display = f' ({item["tag"]})' if item["tag"] else ''
+            text += f"• <b>{date_str}</b> — <b>{item['name']}</b>{tag_display}{days_text}\n"
+            
     await callback.message.edit_text(text, reply_markup=get_main_menu())
 
 # --- BACKUP ---
