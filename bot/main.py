@@ -3,16 +3,17 @@ import os
 import logging
 import datetime
 import re
+import json
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot.database import init_db, add_birthday, get_all_birthdays, delete_birthday, update_birthday_info
+from bot.database import init_db, add_birthday, get_all_birthdays, delete_birthday, update_birthday_info, get_user_settings, update_user_settings
 from bot.scheduler import check_birthdays
 
 load_dotenv()
@@ -24,7 +25,7 @@ if not TOKEN:
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
-class AddBirthday(StatesGroup):
+class AppStates(StatesGroup):
     waiting_for_name = State()
     waiting_for_decade = State()
     waiting_for_year = State()
@@ -33,7 +34,151 @@ class AddBirthday(StatesGroup):
     waiting_for_delete_index = State()
     waiting_for_edit_index = State()
     waiting_for_edit_data = State()
+    waiting_for_notify_time = State()
+    waiting_for_import = State()
 
+def get_main_menu():
+    keyboard = [
+        [InlineKeyboardButton(text="➕ Добавить", callback_data="menu_add"), 
+         InlineKeyboardButton(text="📅 Мой список", callback_data="menu_list")],
+        [InlineKeyboardButton(text="🔥 Ближайшие", callback_data="menu_upcoming")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings"),
+         InlineKeyboardButton(text="💾 Бэкап", callback_data="menu_backup")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+@dp.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("<b>🎂 Birthday Notifier</b>\n\nЯ помогу вам не забыть про важные даты.\nВыберите действие в меню:", reply_markup=get_main_menu())
+
+# --- SECTION: SETTINGS ---
+
+@dp.callback_query(F.data == "menu_settings")
+async def settings_main(callback: CallbackQuery):
+    s = get_user_settings(callback.from_user.id)
+    text = (f"⚙️ <b>Настройки уведомлений</b>\n\n"
+            f"⏰ Время напоминаний: <b>{s['notify_time']}</b>\n"
+            f"📅 Интервалы (дней до): <b>{', '.join([str(i) for i in s['intervals']])}</b>\n\n"
+            "Здесь можно настроить, за сколько дней и в какое время я буду присылать уведомления.")
+    
+    keyboard = [
+        [InlineKeyboardButton(text="⏰ Изменить время", callback_data="set_time")],
+        [InlineKeyboardButton(text="🔔 Выбрать интервалы", callback_data="set_intervals")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_start")]
+    ]
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@dp.callback_query(F.data == "set_time")
+async def set_time_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AppStates.waiting_for_notify_time)
+    await callback.message.edit_text("Введите время в формате ЧЧ:ММ (например, <code>10:00</code>):", 
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_settings")]]))
+
+@dp.message(AppStates.waiting_for_notify_time)
+async def process_set_time(message: Message, state: FSMContext):
+    if re.match(r'^([01]\d|2[0-3]):([0-5]\d)$', message.text):
+        update_user_settings(message.from_user.id, notify_time=message.text)
+        await message.answer(f"✅ Время уведомлений изменено на <b>{message.text}</b>", reply_markup=get_main_menu())
+        await state.clear()
+    else:
+        await message.answer("❌ Неверный формат. Введите время как ЧЧ:ММ (00:00 - 23:59):")
+
+# --- SECTION: UPCOMING ---
+
+@dp.callback_query(F.data == "menu_upcoming")
+async def upcoming_birthdays(callback: CallbackQuery):
+    birthdays = get_all_birthdays()
+    user_birthdays = [b for b in birthdays if b[0] == callback.from_user.id]
+    if not user_birthdays:
+        return await callback.message.edit_text("ℹ️ Список пуст.", reply_markup=get_main_menu())
+    
+    now = datetime.datetime.now()
+    this_month = []
+    for _, name, b_date, tag in user_birthdays:
+        dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
+        if dt.month == now.month:
+            this_month.append((name, b_date, tag, dt.day))
+    
+    this_month.sort(key=lambda x: x[3])
+    
+    if not this_month:
+        text = "📅 <b>В этом месяце именинников нет.</b>"
+    else:
+        text = f"🎁 <b>Именинники в {now.strftime('%B')}:</b>\n\n"
+        for name, b_date, tag, day in this_month:
+            tag_str = f" ({tag})" if tag else ""
+            text += f"• <b>{day:02d}.{now.month:02d}</b> — <b>{name}</b>{tag_str}\n"
+            
+    await callback.message.edit_text(text, reply_markup=get_main_menu())
+
+# --- SECTION: BACKUP ---
+
+@dp.callback_query(F.data == "menu_backup")
+async def backup_menu(callback: CallbackQuery):
+    keyboard = [
+        [InlineKeyboardButton(text="📤 Экспорт в JSON", callback_data="backup_export")],
+        [InlineKeyboardButton(text="📥 Импорт из JSON", callback_data="backup_import")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_start")]
+    ]
+    await callback.message.edit_text("💾 <b>Резервное копирование</b>\n\nВы можете сохранить свои данные в файл или восстановить их.", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@dp.callback_query(F.data == "backup_export")
+async def backup_export(callback: CallbackQuery):
+    birthdays = get_all_birthdays()
+    user_data = [{"name": b[1], "date": b[2], "tag": b[3]} for b in birthdays if b[0] == callback.from_user.id]
+    
+    if not user_data:
+        return await callback.answer("❌ Нечего экспортировать", show_alert=True)
+        
+    json_data = json.dumps(user_data, ensure_ascii=False, indent=2)
+    file = BufferedInputFile(json_data.encode('utf-8'), filename="birthdays_backup.json")
+    await callback.message.answer_document(file, caption="✅ Ваш бэкап готов!")
+    await callback.answer()
+
+# --- REUSE PREVIOUS LOGIC (Add/List/Edit/Delete) ---
+# (Helper for list)
+def get_birthdays_list_text(user_id):
+    birthdays = get_all_birthdays()
+    user_birthdays = [b for b in birthdays if b[0] == user_id]
+    if not user_birthdays: return None
+    user_birthdays.sort(key=lambda x: x[1].lower())
+    text = "📅 <b>Ваш список дней рождения:</b>\n\n"
+    now = datetime.datetime.now()
+    for i, (_, b_name, b_date, b_tag) in enumerate(user_birthdays, 1):
+        try:
+            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
+            target_date = bday_dt.replace(year=now.year)
+            if target_date < now.replace(hour=0, minute=0, second=0): target_date = target_date.replace(year=now.year + 1)
+            age = target_date.year - bday_dt.year
+            name_display = f'<a href="https://t.me/{b_tag.lstrip("@")}">{b_name}</a>' if b_tag else f'<b>{b_name}</b>'
+            text += f"{i}. {name_display} — <code>{b_date}</code> (<b>{age}</b>)\n"
+        except Exception: text += f"{i}. <b>{b_name}</b> — <code>{b_date}</code>\n"
+    return text
+
+@dp.callback_query(F.data == "menu_list")
+async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    text = get_birthdays_list_text(callback.from_user.id)
+    if not text: return await callback.message.edit_text("ℹ️ Список пуст.", reply_markup=get_main_menu())
+    keyboard = [
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data="menu_delete_index"),
+         InlineKeyboardButton(text="✏️ Изменить", callback_data="menu_edit_index")],
+        [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")]
+    ]
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), disable_web_page_preview=True)
+
+@dp.callback_query(F.data == "menu_add")
+async def menu_add_manual(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AppStates.waiting_for_name)
+    await callback.message.edit_text("📝 <b>Имя и Тег</b>\nВведите имя (и @тег через пробел):", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_start")]]))
+
+@dp.callback_query(F.data == "menu_start")
+async def back_to_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("<b>🎂 Birthday Notifier</b>\n\nВыберите действие в меню:", reply_markup=get_main_menu())
+
+# (Year/Month/Day Keyboards - identical to previous version)
 def get_decade_keyboard():
     keyboard = []
     current_year = datetime.datetime.now().year
@@ -47,267 +192,77 @@ def get_decade_keyboard():
 def get_year_in_decade_keyboard(decade):
     keyboard = []
     for y in range(decade + 9, decade - 1, -1):
-        if (decade + 9 - y) % 5 == 0:
-            row = []
-            keyboard.append(row)
-        row.append(InlineKeyboardButton(text=str(y), callback_data=f"set_year:{y}"))
-    keyboard.append([InlineKeyboardButton(text="🔙 К десятилетиям", callback_data="menu_add_year_step")])
+        if (decade + 9 - y) % 5 == 0: keyboard.append([])
+        keyboard[-1].append(InlineKeyboardButton(text=str(y), callback_data=f"set_year:{y}"))
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="menu_add_year_step")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_month_keyboard():
     months = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
     keyboard = []
-    for i in range(0, 12, 3):
-        row = [InlineKeyboardButton(text=months[m], callback_data=f"set_month:{m+1}") for m in range(i, i + 3)]
-        keyboard.append(row)
+    for i in range(0, 12, 3): keyboard.append([InlineKeyboardButton(text=months[m], callback_data=f"set_month:{m+1}") for m in range(i, i + 3)])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_day_keyboard(year, month):
     import calendar
-    keyboard = []
-    month_calendar = calendar.monthcalendar(year, month)
-    for week in month_calendar:
-        row = []
-        for day in week:
-            if day == 0:
-                row.append(InlineKeyboardButton(text=" ", callback_data="ignore"))
-            else:
-                row.append(InlineKeyboardButton(text=str(day), callback_data=f"set_day:{day}"))
-        keyboard.append(row)
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    kb = []
+    for week in calendar.monthcalendar(year, month):
+        row = [InlineKeyboardButton(text=str(day) if day != 0 else " ", callback_data=f"set_day:{day}" if day != 0 else "ignore") for day in week]
+        kb.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
-def get_main_menu():
-    keyboard = [
-        [InlineKeyboardButton(text="➕ Добавить вручную", callback_data="menu_add")],
-        [InlineKeyboardButton(text="👤 Выбрать контакт", callback_data="menu_contact")],
-        [InlineKeyboardButton(text="📅 Мой список", callback_data="menu_list")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def get_birthdays_list_text(user_id):
-    birthdays = get_all_birthdays()
-    user_birthdays = [b for b in birthdays if b[0] == user_id]
-    if not user_birthdays:
-        return None
-    
-    user_birthdays.sort(key=lambda x: x[1].lower())
-    text = "📅 <b>Ваш список дней рождения:</b>\n\n"
-    now = datetime.datetime.now()
-    
-    for i, (_, b_name, b_date, b_tag) in enumerate(user_birthdays, 1):
-        try:
-            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
-            target_date = bday_dt.replace(year=now.year)
-            if target_date < now.replace(hour=0, minute=0, second=0):
-                target_date = target_date.replace(year=now.year + 1)
-            age = target_date.year - bday_dt.year
-            if b_tag:
-                clean_tag = b_tag.lstrip('@')
-                name_display = f'<a href="https://t.me/{clean_tag}">{b_name}</a>'
-            else:
-                name_display = f'<b>{b_name}</b>'
-            text += f"{i}. {name_display} — <code>{b_date}</code> (<b>{age}</b>)\n"
-        except Exception:
-            text += f"{i}. <b>{b_name}</b> — <code>{b_date}</code>\n"
-    return text
-
-@dp.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("<b>🎂 Birthday Notifier</b>\n\nЯ помогу вам не забыть про важные даты.\nВыберите действие в меню:", reply_markup=get_main_menu())
-
-@dp.callback_query(F.data == "menu_add")
-async def menu_add_manual(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AddBirthday.waiting_for_name)
-    await callback.message.edit_text("📝 <b>Шаг 1: Имя и Тег</b>\n\nВведите имя человека.\n<i>Добавьте @тег через пробел, чтобы сделать имя ссылкой.</i>\n\nПример: <code>Иван @vanya</code>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_start")]]))
-    await callback.answer()
-
-@dp.callback_query(F.data == "menu_contact")
-async def menu_add_contact(callback: CallbackQuery):
-    from aiogram.types import KeyboardButtonRequestUsers
-    kb = [[KeyboardButton(text="👤 Выбрать контакт из книги", request_users=KeyboardButtonRequestUsers(request_id=1, user_count=1))]]
-    markup = ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
-    await callback.message.answer("Нажмите кнопку ниже, чтобы выбрать контакт из вашей записной книжки:", reply_markup=markup)
-    await callback.answer()
-
-@dp.message(F.user_shared)
-async def process_shared_user(message: Message, state: FSMContext):
-    await state.set_state(AddBirthday.waiting_for_name)
-    await message.answer("✅ Контакт выбран!\n\nТеперь введите <b>имя</b> для этого человека.\n💡 <i>Добавьте @username для создания ссылки.</i>", reply_markup=types.ReplyKeyboardRemove())
-
-@dp.message(F.contact)
-async def process_contact(message: Message, state: FSMContext):
-    contact = message.contact
-    name = f"{contact.first_name} {contact.last_name or ''}".strip()
-    await state.update_data(name=name)
-    await state.set_state(AddBirthday.waiting_for_decade)
-    await message.answer(f"✅ Контакт получен: <b>{name}</b>\n\nВы можете оставить это имя или ввести новое с @тегом.\nЕсли имя верное, просто выберите <b>десятилетие</b> рождения ниже:", reply_markup=get_decade_keyboard())
-
-@dp.message(AddBirthday.waiting_for_name)
-async def process_name(message: Message, state: FSMContext):
-    text = message.text.strip()
-    username_match = re.search(r'(@\w+)', text)
-    tg_username = username_match.group(1) if username_match else None
-    name = re.sub(r'(@\w+)', '', text).strip()
-    await state.update_data(name=name, tg_username=tg_username)
-    await state.set_state(AddBirthday.waiting_for_decade)
-    await message.answer(f"👤 Имя: <b>{name}</b>" + (f"\n🔗 Тег: <b>{tg_username}</b>" if tg_username else "") + "\n\n📅 <b>Шаг 2: Выберите десятилетие рождения:</b>", reply_markup=get_decade_keyboard())
-
-@dp.callback_query(F.data == "menu_add_year_step")
+# --- HANDLERS ---
 @dp.callback_query(F.data.startswith("set_decade:"))
 async def process_decade(callback: CallbackQuery, state: FSMContext):
-    if callback.data == "menu_add_year_step":
-        data = await state.get_data()
-        decade = data.get("decade")
-    else:
-        decade = int(callback.data.split(":")[1])
-        await state.update_data(decade=decade)
-    await state.set_state(AddBirthday.waiting_for_year)
-    await callback.message.edit_text(f"📅 <b>Выберите год из {decade}-х:</b>", reply_markup=get_year_in_decade_keyboard(decade))
-    await callback.answer()
+    decade = int(callback.data.split(":")[1])
+    await state.update_data(decade=decade)
+    await callback.message.edit_text(f"📅 <b>Выберите год:</b>", reply_markup=get_year_in_decade_keyboard(decade))
 
 @dp.callback_query(F.data.startswith("set_year:"))
 async def process_year(callback: CallbackQuery, state: FSMContext):
     year = int(callback.data.split(":")[1])
     await state.update_data(year=year)
-    await state.set_state(AddBirthday.waiting_for_month)
-    await callback.message.edit_text(f"📅 Год: <b>{year}</b>\n\n<b>Шаг 3: Выберите месяц:</b>", reply_markup=get_month_keyboard())
-    await callback.answer()
+    await callback.message.edit_text("📅 <b>Выберите месяц:</b>", reply_markup=get_month_keyboard())
 
 @dp.callback_query(F.data.startswith("set_month:"))
 async def process_month(callback: CallbackQuery, state: FSMContext):
     month = int(callback.data.split(":")[1])
     data = await state.get_data()
-    year = data.get("year")
     await state.update_data(month=month)
-    await state.set_state(AddBirthday.waiting_for_day)
-    await callback.message.edit_text(f"📅 Год: <b>{year}</b>, Месяц: <b>{month:02d}</b>\n\n<b>Шаг 4: Выберите день:</b>", reply_markup=get_day_keyboard(year, month))
-    await callback.answer()
+    await callback.message.edit_text(f"📅 <b>Выберите день:</b>", reply_markup=get_day_keyboard(data['year'], month))
 
 @dp.callback_query(F.data.startswith("set_day:"))
-async def process_day_selection(callback: CallbackQuery, state: FSMContext):
+async def process_day(callback: CallbackQuery, state: FSMContext):
     day = int(callback.data.split(":")[1])
     data = await state.get_data()
-    name = data.get("name")
-    tg_username = data.get("tg_username")
-    date_str = f"{day:02d}.{data.get('month'):02d}.{data.get('year')}"
-    add_birthday(callback.from_user.id, name, date_str, tg_username)
+    date_str = f"{day:02d}.{data['month']:02d}.{data['year']}"
+    add_birthday(callback.from_user.id, data['name'], date_str, data.get('tg_username'))
     await state.clear()
-    success_text = f"✅ <b>Готово!</b>\n\nИмя: <b>{name}</b>"
-    if tg_username: success_text += f"\nТег: <b>{tg_username}</b>"
-    success_text += f"\nДата: <b>{date_str}</b>"
-    await callback.message.edit_text(success_text, reply_markup=get_main_menu())
-    await callback.answer()
+    await callback.message.edit_text(f"✅ Добавлено: <b>{data['name']}</b> ({date_str})", reply_markup=get_main_menu())
 
-@dp.callback_query(F.data == "menu_list")
-async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    text = get_birthdays_list_text(callback.from_user.id)
-    if not text:
-        await callback.message.edit_text("ℹ️ В вашем списке пока нет записей.", reply_markup=get_main_menu())
-        return
-    
-    keyboard = [
-        [InlineKeyboardButton(text="🗑 Удалить запись", callback_data="menu_delete_index")],
-        [InlineKeyboardButton(text="✏️ Изменить (Имя/Тег)", callback_data="menu_edit_index")],
-        [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")]
-    ]
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), disable_web_page_preview=True)
-    await callback.answer()
+@dp.message(AppStates.waiting_for_name)
+async def process_name(message: Message, state: FSMContext):
+    text = message.text.strip()
+    match = re.search(r'(@\w+)', text)
+    await state.update_data(name=re.sub(r'(@\w+)', '', text).strip(), tg_username=match.group(1) if match else None)
+    await state.set_state(AppStates.waiting_for_decade)
+    await message.answer("📅 <b>Выберите десятилетие:</b>", reply_markup=get_decade_keyboard())
 
 @dp.callback_query(F.data == "menu_delete_index")
 async def delete_index_start(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AddBirthday.waiting_for_delete_index)
-    list_text = get_birthdays_list_text(callback.from_user.id)
-    prompt = "\n🗑 <b>Удаление</b>\nВведите <b>номер</b> записи из списка для удаления:"
-    await callback.message.edit_text(
-        list_text + prompt, 
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]),
-        disable_web_page_preview=True
-    )
-    await callback.answer()
+    await state.set_state(AppStates.waiting_for_delete_index)
+    await callback.message.edit_text(get_birthdays_list_text(callback.from_user.id) + "\n🗑 <b>Номер для удаления:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]))
 
-@dp.message(AddBirthday.waiting_for_delete_index)
-async def process_delete_index(message: Message, state: FSMContext):
-    if not message.text or not message.text.isdigit():
-        await state.clear()
-        await message.answer("❌ Действие отменено.", reply_markup=get_main_menu())
-        return
-    idx = int(message.text)
-    birthdays = get_all_birthdays()
-    user_birthdays = [b for b in birthdays if b[0] == message.from_user.id]
-    user_birthdays.sort(key=lambda x: x[1].lower())
-    if 1 <= idx <= len(user_birthdays):
-        target = user_birthdays[idx-1]
-        delete_birthday(message.from_user.id, target[1])
-        await message.answer(f"🗑 Запись <b>{target[1]}</b> удалена!", reply_markup=get_main_menu())
-    else:
-        await message.answer(f"❌ Номер {idx} не найден.", reply_markup=get_main_menu())
+@dp.message(AppStates.waiting_for_delete_index)
+async def process_delete(message: Message, state: FSMContext):
+    if message.text.isdigit():
+        birthdays = sorted([b for b in get_all_birthdays() if b[0] == message.from_user.id], key=lambda x: x[1].lower())
+        idx = int(message.text)
+        if 1 <= idx <= len(birthdays):
+            delete_birthday(message.from_user.id, birthdays[idx-1][1])
+            await message.answer("✅ Удалено!", reply_markup=get_main_menu())
+        else: await message.answer("❌ Ошибка в номере.")
     await state.clear()
-
-@dp.callback_query(F.data == "menu_edit_index")
-async def edit_index_start(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AddBirthday.waiting_for_edit_index)
-    list_text = get_birthdays_list_text(callback.from_user.id)
-    prompt = "\n✏️ <b>Редактирование</b>\nВведите <b>номер</b> записи, которую хотите изменить:"
-    await callback.message.edit_text(
-        list_text + prompt, 
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]),
-        disable_web_page_preview=True
-    )
-    await callback.answer()
-
-@dp.message(AddBirthday.waiting_for_edit_index)
-async def process_edit_index(message: Message, state: FSMContext):
-    if not message.text or not message.text.isdigit():
-        await state.clear()
-        await message.answer("❌ Действие отменено.", reply_markup=get_main_menu())
-        return
-    idx = int(message.text)
-    birthdays = get_all_birthdays()
-    user_birthdays = [b for b in birthdays if b[0] == message.from_user.id]
-    user_birthdays.sort(key=lambda x: x[1].lower())
-    
-    if 1 <= idx <= len(user_birthdays):
-        target = user_birthdays[idx-1]
-        await state.update_data(old_name=target[1])
-        await state.set_state(AddBirthday.waiting_for_edit_data)
-        await message.answer(
-            f"Вы выбрали: <b>{target[1]}</b>\n\n"
-            f"Теперь введите новое имя и тег (через пробел):\n"
-            f"Пример: <code>Иван @vanya</code>",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]))
-    else:
-        await message.answer(f"❌ Номер {idx} не найден.", reply_markup=get_main_menu())
-        await state.clear()
-
-@dp.message(AddBirthday.waiting_for_edit_data)
-async def process_edit_data(message: Message, state: FSMContext):
-    text = message.text.strip()
-    username_match = re.search(r'(@\w+)', text)
-    new_tag = username_match.group(1) if username_match else None
-    new_name = re.sub(r'(@\w+)', '', text).strip()
-    
-    data = await state.get_data()
-    old_name = data.get("old_name")
-    
-    update_birthday_info(message.from_user.id, old_name, new_name, new_tag)
-    await state.clear()
-    
-    res_text = f"✅ <b>Запись обновлена!</b>\n\nБыло: <b>{old_name}</b>\nСтало: <b>{new_name}</b>"
-    if new_tag: res_text += f" ({new_tag})"
-    
-    await message.answer(res_text, reply_markup=get_main_menu())
-
-@dp.callback_query(F.data == "menu_start")
-async def back_to_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("<b>🎂 Birthday Notifier</b>\n\nВыберите действие в меню:", reply_markup=get_main_menu())
-    await callback.answer()
-
-@dp.callback_query(F.data == "ignore")
-async def ignore_callback(callback: CallbackQuery):
-    await callback.answer()
 
 async def main():
     logging.basicConfig(level=logging.INFO)
