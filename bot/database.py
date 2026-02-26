@@ -33,19 +33,20 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     
-    # Unique index to prevent duplicates by name for the same user
-    try:
-        cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_user_name ON birthdays(user_id, name)')
-    except sqlite3.OperationalError:
-        pass
-
-    # One-time cleanup: remove existing duplicates keeping the latest ones
+    # 1. One-time cleanup: remove existing duplicates keeping the latest ones
+    # This MUST happen before creating the unique index
     cursor.execute('''
         DELETE FROM birthdays 
         WHERE id NOT IN (
             SELECT MAX(id) FROM birthdays GROUP BY user_id, name
         )
     ''')
+
+    # 2. Unique index to prevent future duplicates
+    try:
+        cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_user_name ON birthdays(user_id, name)')
+    except (sqlite3.OperationalError, sqlite3.IntegrityError):
+        pass
     
     conn.commit()
     conn.close()
