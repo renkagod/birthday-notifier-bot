@@ -185,9 +185,15 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
                 target_date = target_date.replace(year=now.year + 1)
             age = target_date.year - bday_dt.year
             
-            tag_str = f" ({b_tag})" if b_tag else ""
-            # Format: 1. Name (@tag) — 27.02.2005 (21)
-            text += f"{i}. <b>{b_name}</b>{tag_str} — <code>{b_date}</code> (<b>{age}</b>)\n"
+            # Create a clickable link if tag exists
+            if b_tag:
+                clean_tag = b_tag.lstrip('@')
+                name_display = f'<a href="https://t.me/{clean_tag}">{b_name}</a>'
+            else:
+                name_display = f'<b>{b_name}</b>'
+
+            # Format: 1. Name — 27.02.2005 (21)
+            text += f"{i}. {name_display} — <code>{b_date}</code> (<b>{age}</b>)\n"
         except Exception:
             text += f"{i}. <b>{b_name}</b> — <code>{b_date}</code>\n"
     
@@ -195,7 +201,7 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🗑 Удалить по номеру", callback_data="menu_delete_index")],
         [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")]
     ]
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), disable_web_page_preview=True)
     await callback.answer()
 
 @dp.callback_query(F.data == "menu_delete_index")
