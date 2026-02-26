@@ -33,6 +33,20 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     
+    # Unique index to prevent duplicates by name for the same user
+    try:
+        cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_user_name ON birthdays(user_id, name)')
+    except sqlite3.OperationalError:
+        pass
+
+    # One-time cleanup: remove existing duplicates keeping the latest ones
+    cursor.execute('''
+        DELETE FROM birthdays 
+        WHERE id NOT IN (
+            SELECT MAX(id) FROM birthdays GROUP BY user_id, name
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -64,8 +78,11 @@ def update_user_settings(user_id, notify_time=None, intervals=None):
 def add_birthday(user_id, name, birth_date, tg_username=None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO birthdays (user_id, name, birth_date, tg_username) VALUES (?, ?, ?, ?)', 
-                   (user_id, name, birth_date, tg_username))
+    # Use REPLACE to avoid duplicates
+    cursor.execute('''
+        INSERT OR REPLACE INTO birthdays (user_id, name, birth_date, tg_username) 
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, name, birth_date, tg_username))
     conn.commit()
     conn.close()
 
