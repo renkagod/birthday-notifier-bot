@@ -171,13 +171,12 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("ℹ️ В вашем списке пока нет записей.", reply_markup=get_main_menu())
         return
     
+    # Sort alphabetically by name
     user_birthdays.sort(key=lambda x: x[1].lower())
     
-    text = "📅 <b>Ваш список дней рождения:</b>\n"
-    text += "<code>#  | Имя            | Дата       | Возраст</code>\n"
-    text += "<code>------------------------------------------</code>\n"
-    
+    text = "📅 <b>Ваш список дней рождения:</b>\n\n"
     now = datetime.datetime.now()
+    
     for i, (_, b_name, b_date, b_tag) in enumerate(user_birthdays, 1):
         try:
             bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
@@ -186,20 +185,14 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
                 target_date = target_date.replace(year=now.year + 1)
             age = target_date.year - bday_dt.year
             
-            # Formatting name with tag
-            full_name = b_name
-            if b_tag:
-                full_name += f" ({b_tag})"
-            
-            # Truncate long names for table appearance
-            display_name = (full_name[:14] + '..') if len(full_name) > 16 else full_name.ljust(16)
-            
-            text += f"<code>{i:<2} | {display_name} | {b_date} | ({age})</code>\n"
+            tag_str = f" ({b_tag})" if b_tag else ""
+            # Format: 1. Name (@tag) — 27.02.2005 (21)
+            text += f"{i}. <b>{b_name}</b>{tag_str} — <code>{b_date}</code> (<b>{age}</b>)\n"
         except Exception:
-            text += f"<code>{i:<2} | {b_name[:16]:<16} | {b_date} | --</code>\n"
+            text += f"{i}. <b>{b_name}</b> — <code>{b_date}</code>\n"
     
     keyboard = [
-        [InlineKeyboardButton(text="🗑 Удалить запись", callback_data="menu_delete_index")],
+        [InlineKeyboardButton(text="🗑 Удалить по номеру", callback_data="menu_delete_index")],
         [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")]
     ]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
