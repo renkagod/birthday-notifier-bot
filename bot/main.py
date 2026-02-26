@@ -179,18 +179,33 @@ async def backup_menu(callback: CallbackQuery):
     ]
     await callback.message.edit_text("💾 <b>Резервное копирование</b>\n\nВы можете сохранить свои данные в файл или восстановить их.", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
-@dp.callback_query(F.data == "backup_export")
-async def backup_export(callback: CallbackQuery):
-    birthdays = get_all_birthdays()
-    user_data = [{"name": b[1], "date": b[2], "tag": b[3]} for b in birthdays if b[0] == callback.from_user.id]
-    
-    if not user_data:
-        return await callback.answer("❌ Нечего экспортировать", show_alert=True)
-        
-    json_data = json.dumps(user_data, ensure_ascii=False, indent=2)
-    file = BufferedInputFile(json_data.encode('utf-8'), filename="birthdays_backup.json")
-    await callback.message.answer_document(file, caption="✅ Ваш бэкап готов!")
+@dp.callback_query(F.data == "backup_import")
+async def backup_import_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AppStates.waiting_for_import)
+    await callback.message.edit_text("📥 <b>Импорт данных</b>\n\nОтправьте мне JSON файл, который вы экспортировали ранее.", 
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_backup")]]))
     await callback.answer()
+
+@dp.message(AppStates.waiting_for_import, F.document)
+async def process_import(message: Message, state: FSMContext):
+    file_id = message.document.file_id
+    file = await bot.get_file(file_id)
+    file_path = file.file_path
+    
+    import io
+    content = await bot.download_file(file_path, io.BytesIO())
+    try:
+        data = json.loads(content.getvalue().decode('utf-8'))
+        count = 0
+        for item in data:
+            if "name" in item and "date" in item:
+                add_birthday(message.from_user.id, item['name'], item['date'], item.get('tag'))
+                count += 1
+        
+        await message.answer(f"✅ Успешно импортировано <b>{count}</b> записей!", reply_markup=get_main_menu())
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при чтении файла: {e}\nУбедитесь, что это корректный JSON бэкап.", reply_markup=get_main_menu())
 
 # --- REUSE PREVIOUS LOGIC (Add/List/Edit/Delete) ---
 # (Helper for list)
