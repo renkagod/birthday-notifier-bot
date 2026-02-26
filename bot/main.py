@@ -22,15 +22,10 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
-        "👋 Привет! Я бот для уведомлений о днях рождения.
-
-"
-        "Команды:
-"
-        "/add [Имя] [ГГГГ-ММ-ДД] - добавить ДР
-"
-        "/list - список всех ДР
-"
+        "👋 Привет! Я бот для уведомлений о днях рождения.\n\n"
+        "Команды:\n"
+        "/add [Имя] [ДД.ММ.ГГГГ] - добавить ДР\n"
+        "/list - список всех ДР\n"
         "/delete [Имя] - удалить запись"
     )
 
@@ -38,7 +33,7 @@ async def cmd_start(message: Message):
 async def cmd_add(message: Message):
     args = message.text.split(maxsplit=2)
     if len(args) < 3:
-        return await message.answer("❌ Формат: /add [Имя] [ГГГГ-ММ-ДД]")
+        return await message.answer("❌ Формат: /add [Имя] [ДД.ММ.ГГГГ]")
     
     name = args[1]
     date_str = args[2]
@@ -46,11 +41,11 @@ async def cmd_add(message: Message):
     try:
         # Validate format
         import datetime
-        datetime.datetime.strptime(date_str, "%Y-%m-%d")
+        datetime.datetime.strptime(date_str, "%d.%m.%Y")
         add_birthday(message.from_user.id, name, date_str)
         await message.answer(f"✅ Добавлен день рождения для {name} на {date_str}!")
     except ValueError:
-        await message.answer("❌ Ошибка в формате даты. Используй ГГГГ-ММ-ДД (например 1990-05-25)")
+        await message.answer("❌ Ошибка в формате даты. Используй ДД.ММ.ГГГГ (например 25.05.1990)")
 
 @dp.message(Command("list"))
 async def cmd_list(message: Message):
@@ -60,9 +55,7 @@ async def cmd_list(message: Message):
     if not user_birthdays:
         return await message.answer("ℹ️ Твой список пуст.")
     
-    text = "📅 Твои дни рождения:
-" + "
-".join([f"• {b[1]}: {b[2]}" for b in user_birthdays])
+    text = "📅 Твои дни рождения:\n" + "\n".join([f"• {b[1]}: {b[2]}" for b in user_birthdays])
     await message.answer(text)
 
 @dp.message(Command("delete"))

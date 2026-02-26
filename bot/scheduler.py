@@ -7,9 +7,9 @@ async def check_birthdays(bot):
     birthdays = get_all_birthdays()
     
     for user_id, name, bday_str in birthdays:
-        # Assuming format YYYY-MM-DD
+        # Assuming format DD.MM.YYYY
         try:
-            bday_date = datetime.strptime(bday_str, "%Y-%m-%d").replace(year=now.year)
+            bday_date = datetime.strptime(bday_str, "%d.%m.%Y").replace(year=now.year)
         except ValueError:
             continue
 
