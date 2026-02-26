@@ -46,3 +46,14 @@ def delete_birthday(user_id, name):
     cursor.execute('DELETE FROM birthdays WHERE user_id = ? AND name = ?', (user_id, name))
     conn.commit()
     conn.close()
+
+def update_birthday_info(user_id, old_name, new_name, new_tag):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE birthdays 
+        SET name = ?, tg_username = ? 
+        WHERE user_id = ? AND name = ?
+    ''', (new_name, new_tag, user_id, old_name))
+    conn.commit()
+    conn.close()
