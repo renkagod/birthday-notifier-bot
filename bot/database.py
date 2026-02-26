@@ -12,24 +12,30 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             name TEXT NOT NULL,
-            birth_date TEXT NOT NULL
+            birth_date TEXT NOT NULL,
+            tg_username TEXT
         )
     ''')
+    # Migration for existing databases
+    try:
+        cursor.execute('ALTER TABLE birthdays ADD COLUMN tg_username TEXT')
+    except sqlite3.OperationalError:
+        pass # Column already exists
     conn.commit()
     conn.close()
 
-def add_birthday(user_id, name, birth_date):
+def add_birthday(user_id, name, birth_date, tg_username=None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO birthdays (user_id, name, birth_date) VALUES (?, ?, ?)', 
-                   (user_id, name, birth_date))
+    cursor.execute('INSERT INTO birthdays (user_id, name, birth_date, tg_username) VALUES (?, ?, ?, ?)', 
+                   (user_id, name, birth_date, tg_username))
     conn.commit()
     conn.close()
 
 def get_all_birthdays():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('SELECT user_id, name, birth_date FROM birthdays')
+    cursor.execute('SELECT user_id, name, birth_date, tg_username FROM birthdays')
     rows = cursor.fetchall()
     conn.close()
     return rows
