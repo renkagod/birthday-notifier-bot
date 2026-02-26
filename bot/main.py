@@ -54,13 +54,46 @@ async def cmd_start(message: Message, state: FSMContext):
 
 # --- SECTION: SETTINGS ---
 
+def get_intervals_keyboard(user_id):
+    s = get_user_settings(user_id)
+    current = s['intervals']
+    
+    options = [
+        (30.0, "За месяц"),
+        (7.0, "За неделю"),
+        (3.0, "За 3 дня"),
+        (1.0, "Завтра"),
+        (0.5, "За 30 мин"),
+        (0.08, "За 5 мин"),
+        (0.0, "В день ДР")
+    ]
+    
+    keyboard = []
+    for val, label in options:
+        status = "✅" if val in current else "❌"
+        keyboard.append([InlineKeyboardButton(text=f"{status} {label}", callback_data=f"toggle_int:{val}")])
+    
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="menu_settings")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 @dp.callback_query(F.data == "menu_settings")
 async def settings_main(callback: CallbackQuery):
     s = get_user_settings(callback.from_user.id)
+    # Filter out small floats for display to keep it clean
+    display_ints = []
+    for i in s['intervals']:
+        if i == 30.0: display_ints.append("Месяц")
+        elif i == 7.0: display_ints.append("Неделя")
+        elif i == 3.0: display_ints.append("3 дня")
+        elif i == 1.0: display_ints.append("Завтра")
+        elif i == 0.5: display_ints.append("30 мин")
+        elif i == 0.08: display_ints.append("5 мин")
+        elif i == 0.0: display_ints.append("День ДР")
+
     text = (f"⚙️ <b>Настройки уведомлений</b>\n\n"
             f"⏰ Время напоминаний: <b>{s['notify_time']}</b>\n"
-            f"📅 Интервалы (дней до): <b>{', '.join([str(i) for i in s['intervals']])}</b>\n\n"
-            "Здесь можно настроить, за сколько дней и в какое время я буду присылать уведомления.")
+            f"🔔 Активные интервалы: <b>{', '.join(display_ints) if display_ints else 'Нет'}</b>\n\n"
+            "Здесь можно настроить время и список уведомлений.")
     
     keyboard = [
         [InlineKeyboardButton(text="⏰ Изменить время", callback_data="set_time")],
@@ -68,6 +101,29 @@ async def settings_main(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_start")]
     ]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@dp.callback_query(F.data == "set_intervals")
+async def set_intervals_menu(callback: CallbackQuery):
+    await callback.message.edit_text("<b>Выберите интервалы уведомлений:</b>\n\n"
+                                     "✅ — включено\n"
+                                     "❌ — выключено", 
+                                     reply_markup=get_intervals_keyboard(callback.from_user.id))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("toggle_int:"))
+async def process_toggle_int(callback: CallbackQuery):
+    val = float(callback.data.split(":")[1])
+    s = get_user_settings(callback.from_user.id)
+    current = s['intervals']
+    
+    if val in current:
+        current.remove(val)
+    else:
+        current.append(val)
+    
+    update_user_settings(callback.from_user.id, intervals=current)
+    await callback.message.edit_reply_markup(reply_markup=get_intervals_keyboard(callback.from_user.id))
+    await callback.answer()
 
 @dp.callback_query(F.data == "set_time")
 async def set_time_start(callback: CallbackQuery, state: FSMContext):
