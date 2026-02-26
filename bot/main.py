@@ -63,30 +63,73 @@ def get_day_keyboard(year, month):
         keyboard.append(row)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    kb = [
-        [KeyboardButton(text="➕ Добавить день рождения")],
-        [KeyboardButton(text="👤 Поделиться контактом", request_contact=True)],
-        [KeyboardButton(text="📅 Список всех ДР")]
+def get_main_menu():
+    keyboard = [
+        [InlineKeyboardButton(text="➕ Добавить вручную", callback_data="menu_add")],
+        [InlineKeyboardButton(text="👤 Добавить через контакт", callback_data="menu_contact")],
+        [InlineKeyboardButton(text="📅 Список всех ДР", callback_data="menu_list")]
     ]
-    markup = ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
-    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+@dp.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(
         "<b>👋 Привет! Я бот для уведомлений о днях рождения.</b>\n\n"
-        "Выберите действие на клавиатуре ниже:",
-        reply_markup=markup
+        "Выберите действие:",
+        reply_markup=get_main_menu()
     )
 
-@dp.message(F.text == "➕ Добавить день рождения")
-@dp.message(Command("add_manual"))
-async def manual_add(message: Message, state: FSMContext):
+@dp.callback_query(F.data == "menu_add")
+async def menu_add_manual(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddBirthday.waiting_for_name)
-    await message.answer("Введите имя именинника:", reply_markup=types.ReplyKeyboardRemove())
+    await callback.message.edit_text("Введите имя именинника:", 
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                         [InlineKeyboardButton(text="❌ Отмена", callback_data="menu_start")]
+                                     ]))
+    await callback.answer()
 
-@dp.message(F.text == "📅 Список всех ДР")
-async def list_btn(message: Message):
-    await cmd_list(message)
+@dp.callback_query(F.data == "menu_contact")
+async def menu_add_contact(callback: CallbackQuery):
+    kb = [[KeyboardButton(text="👤 Отправить контакт", request_contact=True)]]
+    markup = ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
+    await callback.message.answer("Нажмите кнопку ниже, чтобы поделиться контактом:", reply_markup=markup)
+    await callback.answer()
+
+@dp.callback_query(F.data == "menu_list")
+async def menu_list_birthdays(callback: CallbackQuery):
+    birthdays = get_all_birthdays()
+    user_birthdays = [b for b in birthdays if b[0] == callback.from_user.id]
+    
+    if not user_birthdays:
+        await callback.message.edit_text("ℹ️ Твой список пуст.", reply_markup=get_main_menu())
+        return
+
+    text = "📅 <b>Твои дни рождения:</b>\n\n"
+    keyboard = []
+    now = datetime.datetime.now()
+    for _, b_name, b_date in user_birthdays:
+        try:
+            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
+            target_date = bday_dt.replace(year=now.year)
+            if target_date < now.replace(hour=0, minute=0, second=0):
+                target_date = target_date.replace(year=now.year + 1)
+            age = target_date.year - bday_dt.year
+            text += f"• <b>{b_name}</b>: {b_date} (исполнится <b>{age}</b>)\n"
+        except Exception:
+            text += f"• <b>{b_name}</b>: {b_date}\n"
+        keyboard.append([InlineKeyboardButton(text=f"🗑 Удалить {b_name}", callback_data=f"del:{b_name}")])
+    
+    keyboard.append([InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")])
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.edit_text(text, reply_markup=markup)
+    await callback.answer()
+
+@dp.callback_query(F.data == "menu_start")
+async def back_to_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("<b>Главное меню</b>\nВыберите действие:", reply_markup=get_main_menu())
+    await callback.answer()
 
 @dp.message(F.contact)
 async def process_contact(message: Message, state: FSMContext):
@@ -135,96 +178,19 @@ async def process_day_selection(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     
     await callback.message.edit_text(f"✅ Добавлен день рождения для <b>{name}</b> на {normalized_date}!")
+    await callback.message.answer("<b>Главное меню</b>", reply_markup=get_main_menu())
     await callback.answer()
 
 @dp.callback_query(F.data == "ignore")
 async def ignore_callback(callback: CallbackQuery):
     await callback.answer()
 
-@dp.message(Command("add"))
-async def cmd_add(message: Message, state: FSMContext):
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        return await message.answer("❌ Используйте меню или формат: <code>/add [Имя] [ДД.ММ.ГГГГ]</code>")
-    
-    name, date_str = args[1], args[2]
-    try:
-        datetime.datetime.strptime(date_str, "%d.%m.%Y")
-        add_birthday(message.from_user.id, name, date_str)
-        await message.answer(f"✅ Добавлен день рождения для <b>{name}</b> на {date_str}!")
-    except ValueError:
-        await message.answer("❌ Ошибка в формате даты. Используй ДД.ММ.ГГГГ")
-
-@dp.message(Command("list"))
-async def cmd_list(message: Message):
-    birthdays = get_all_birthdays()
-    user_birthdays = [b for b in birthdays if b[0] == message.from_user.id]
-    
-    if not user_birthdays:
-        return await message.answer("ℹ️ Твой список пуст.")
-    
-    text = "📅 <b>Твои дни рождения:</b>\n\n"
-    keyboard = []
-    
-    now = datetime.datetime.now()
-    for _, name, date_str in user_birthdays:
-        try:
-            bday_dt = datetime.datetime.strptime(date_str, "%d.%m.%Y")
-            target_date = bday_dt.replace(year=now.year)
-            if target_date < now.replace(hour=0, minute=0, second=0):
-                target_date = target_date.replace(year=now.year + 1)
-            age = target_date.year - bday_dt.year
-            text += f"• <b>{name}</b>: {date_str} (исполнится <b>{age}</b>)\n"
-        except Exception:
-            text += f"• <b>{name}</b>: {date_str}\n"
-        keyboard.append([InlineKeyboardButton(text=f"🗑 Удалить {name}", callback_data=f"del:{name}")])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await message.answer(text, reply_markup=markup)
-
 @dp.callback_query(F.data.startswith("del:"))
 async def process_delete_callback(callback: CallbackQuery):
     name = callback.data.split(":")[1]
     delete_birthday(callback.from_user.id, name)
-    
-    # Update the list message
     await callback.answer(f"Запись '{name}' удалена")
-    
-    # Re-fetch and update the message
-    birthdays = get_all_birthdays()
-    user_birthdays = [b for b in birthdays if b[0] == callback.from_user.id]
-    
-    if not user_birthdays:
-        await callback.message.edit_text("ℹ️ Твой список пуст.")
-        return
-
-    text = "📅 <b>Твои дни рождения:</b>\n\n"
-    keyboard = []
-    now = datetime.datetime.now()
-    for _, b_name, b_date in user_birthdays:
-        try:
-            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
-            target_date = bday_dt.replace(year=now.year)
-            if target_date < now.replace(hour=0, minute=0, second=0):
-                target_date = target_date.replace(year=now.year + 1)
-            age = target_date.year - bday_dt.year
-            text += f"• <b>{b_name}</b>: {b_date} (исполнится <b>{age}</b>)\n"
-        except Exception:
-            text += f"• <b>{b_name}</b>: {b_date}\n"
-        keyboard.append([InlineKeyboardButton(text=f"🗑 Удалить {b_name}", callback_data=f"del:{b_name}")])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await callback.message.edit_text(text, reply_markup=markup)
-
-@dp.message(Command("delete"))
-async def cmd_delete(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.answer("❌ Формат: /delete [Имя]")
-    
-    name = args[1]
-    delete_birthday(message.from_user.id, name)
-    await message.answer(f"🗑 Удалена запись для {name}")
+    await menu_list_birthdays(callback)
 
 async def main():
     logging.basicConfig(level=logging.INFO)
