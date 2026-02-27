@@ -48,7 +48,7 @@ async def check_birthdays(bot):
             elif diff_minutes == 5 and 0.08 in intervals: # ~5 min
                 msg = f"🔥 <b>Через 5 минут</b> день рождения у {display_name}!"
             elif diff_minutes == 0 and 0 in intervals:
-                msg = f"🥳 <b>УРА! Сегодня {display_name} исполняется {age}!</b> 🎉"
+                msg = f"🥳 <b>Сегодня {display_name} исполняется {age}!</b> 🎉"
             
             # 2. Check long-term reminders (1+ days) at user's preferred time
             elif now.time() == notify_time:
