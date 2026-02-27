@@ -23,7 +23,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS user_settings (
             user_id INTEGER PRIMARY KEY,
             notify_time TEXT DEFAULT '09:00',
-            intervals TEXT DEFAULT '30,7,3,1,0.5,0.08,0'
+            intervals TEXT DEFAULT '30,7,3,1,0,-1,0.5,0.08'
         )
     ''')
     
@@ -59,7 +59,7 @@ def get_user_settings(user_id):
     conn.close()
     if row:
         return {"notify_time": row[0], "intervals": [float(i) for i in row[1].split(',')]}
-    return {"notify_time": "09:00", "intervals": [30.0, 7.0, 3.0, 1.0, 0.5, 0.08, 0.0]}
+    return {"notify_time": "09:00", "intervals": [30.0, 7.0, 3.0, 1.0, 0.0, -1.0, 0.5, 0.08]}
 
 def update_user_settings(user_id, notify_time=None, intervals=None):
     current = get_user_settings(user_id)

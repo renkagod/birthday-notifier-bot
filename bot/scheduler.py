@@ -42,25 +42,26 @@ async def check_birthdays(bot):
 
             msg = None
             
-            # 1. Check short-term reminders (less than 1 day)
+            # 1. Midnight/Pre-midnight reminders (Always relative to 00:00)
             if diff_minutes == 30 and 0.5 in intervals:
                 msg = f"⏳ <b>Через 30 минут</b> день рождения у {display_name}! (исполнится {age})"
-            elif diff_minutes == 5 and 0.08 in intervals: # ~5 min
+            elif diff_minutes == 5 and 0.08 in intervals:
                 msg = f"🔥 <b>Через 5 минут</b> день рождения у {display_name}!"
-            elif diff_minutes == 0 and 0 in intervals:
-                msg = f"🥳 <b>Сегодня {display_name} исполняется {age}!</b> 🎉"
+            elif diff_minutes == 0 and -1.0 in intervals: # NEW: Midnight flag
+                msg = f"🌙 <b>С днем рождения!</b> Сегодня {display_name} исполняется {age}! 🥳"
             
-            # 2. Check long-term reminders (1+ days) at user's preferred time
+            # 2. Scheduled reminders (At user's preferred time)
             elif now.time() == notify_time:
-                # We check days. For 1 month we use 30 days.
-                if diff_days == 30 and 30 in intervals:
-                    msg = f"📅 <b>Через месяц</b> ({bday_str}) день рождения у {display_name}!"
-                elif diff_days == 7 and 7 in intervals:
-                    msg = f"🔔 <b>Через неделю</b> день рождения у {display_name}!"
-                elif diff_days == 3 and 3 in intervals:
-                    msg = f"🔔 <b>Через 3 дня</b> день рождения у {display_name}!"
-                elif diff_days == 1 and 1 in intervals:
+                if diff_days == 0 and 0.0 in intervals: # Daytime reminder
+                    msg = f"☀️ <b>Напоминание: сегодня</b> день рождения у {display_name}! (исполнится {age}) 🎉"
+                elif diff_days == 1 and 1.0 in intervals:
                     msg = f"🔔 <b>Завтра</b> день рождения у {display_name}!"
+                elif diff_days == 3 and 3.0 in intervals:
+                    msg = f"🔔 <b>Через 3 дня</b> день рождения у {display_name}!"
+                elif diff_days == 7 and 7.0 in intervals:
+                    msg = f"🔔 <b>Через неделю</b> день рождения у {display_name}!"
+                elif diff_days == 30 and 30.0 in intervals:
+                    msg = f"📅 <b>Через месяц</b> ({bday_str}) день рождения у {display_name}!"
 
             if msg:
                 await bot.send_message(user_id, msg)

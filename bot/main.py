@@ -79,7 +79,11 @@ async def cmd_start(message: Message, state: FSMContext):
 def get_intervals_keyboard(user_id):
     s = get_user_settings(user_id)
     current = s['intervals']
-    options = [(30.0, "За месяц"), (7.0, "За неделю"), (3.0, "За 3 дня"), (1.0, "Завтра"), (0.5, "За 30 мин"), (0.08, "За 5 мин"), (0.0, "В день ДР")]
+    options = [
+        (30.0, "📅 За месяц"), (7.0, "📅 За неделю"), (3.0, "📅 За 3 дня"), 
+        (1.0, "📅 Завтра"), (0.0, "☀️ Сегодня (днем)"),
+        (0.5, "⏳ За 30 мин"), (0.08, "⏳ За 5 мин"), (-1.0, "🌙 В полночь (00:00)")
+    ]
     keyboard = [[InlineKeyboardButton(text=f"{'✅' if val in current else '❌'} {label}", callback_data=f"toggle_int:{val}")] for val, label in options]
     keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="menu_settings")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -88,7 +92,10 @@ def get_intervals_keyboard(user_id):
 async def settings_main(callback: CallbackQuery):
     s = get_user_settings(callback.from_user.id)
     display_ints = []
-    mapping = {30.0: "Месяц", 7.0: "Неделя", 3.0: "3 дня", 1.0: "Завтра", 0.5: "30 мин", 0.08: "5 мин", 0.0: "День ДР"}
+    mapping = {
+        30.0: "Месяц", 7.0: "Неделя", 3.0: "3 дня", 1.0: "Завтра", 
+        0.0: "Днем", 0.5: "30 мин", 0.08: "5 мин", -1.0: "Полночь"
+    }
     for i in s['intervals']:
         if i in mapping: display_ints.append(mapping[i])
     text = (f"⚙️ <b>Настройки уведомлений</b>\n\n⏰ Время напоминаний: <b>{s['notify_time']}</b>\n"
