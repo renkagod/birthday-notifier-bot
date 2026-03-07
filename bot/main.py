@@ -52,12 +52,30 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def get_birthdays_list_text(user_id):
-    birthdays = get_all_birthdays()
-    user_birthdays = [b for b in birthdays if b[0] == user_id]
+def get_sorted_birthdays(user_id, sort_by='name'):
+    birthdays = [b for b in get_all_birthdays() if b[0] == user_id]
+    if sort_by == 'name':
+        return sorted(birthdays, key=lambda x: x[1].lower())
+    
+    now = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    def get_upcoming_date(b):
+        try:
+            b_date = b[2]
+            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
+            target_date = bday_dt.replace(year=now.year)
+            if target_date < now:
+                target_date = target_date.replace(year=now.year + 1)
+            return target_date
+        except: return datetime.datetime.max
+            
+    return sorted(birthdays, key=lambda x: (get_upcoming_date(x), x[1].lower()))
+
+def get_birthdays_list_text(user_id, sort_by='name'):
+    user_birthdays = get_sorted_birthdays(user_id, sort_by)
     if not user_birthdays: return None
-    user_birthdays.sort(key=lambda x: x[1].lower())
-    text = "📅 <b>Ваш список дней рождения:</b>\n\n"
+    
+    title = "📅 <b>Ваш список (по имени):</b>\n\n" if sort_by == 'name' else "📅 <b>Ваш список (по дате):</b>\n\n"
+    text = title
     now = datetime.datetime.now()
     for i, (_, b_name, b_date, b_tag) in enumerate(user_birthdays, 1):
         try:
@@ -214,23 +232,43 @@ async def process_import(message: Message, state: FSMContext):
     except Exception as e: await message.answer(f"❌ Ошибка: {e}", reply_markup=get_main_menu())
 
 # --- LIST / EDIT / DELETE ---
-@dp.callback_query(F.data == "menu_list")
+@dp.callback_query(F.data.startswith("menu_list"))
 async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    text = get_birthdays_list_text(callback.from_user.id)
-    if not text: return await callback.message.edit_text("ℹ️ Список пуст.", reply_markup=get_main_menu())
-    keyboard = [[InlineKeyboardButton(text="🗑 Удалить", callback_data="menu_delete_index"), InlineKeyboardButton(text="✏️ Изменить", callback_data="menu_edit_index")], [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")]]
+    sort_by = 'name'
+    if ":" in callback.data:
+        sort_by = callback.data.split(":")[1]
+    
+    await state.update_data(current_sort=sort_by)
+    text = get_birthdays_list_text(callback.from_user.id, sort_by)
+    
+    if not text: 
+        return await callback.message.edit_text("ℹ️ Список пуст.", reply_markup=get_main_menu())
+    
+    sort_label = "🔤 По имени" if sort_by == 'name' else "📅 По дате"
+    next_sort = 'date' if sort_by == 'name' else 'name'
+    next_label = "🔄 Сортировать по дате" if sort_by == 'name' else "🔄 Сортировать по имени"
+    
+    keyboard = [
+        [InlineKeyboardButton(text=next_label, callback_data=f"menu_list:{next_sort}")],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data="menu_delete_index"), 
+         InlineKeyboardButton(text="✏️ Изменить", callback_data="menu_edit_index")],
+        [InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu_start")]
+    ]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), disable_web_page_preview=True)
 
 @dp.callback_query(F.data == "menu_delete_index")
 async def delete_index_start(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    sort_by = data.get('current_sort', 'name')
     await state.set_state(AppStates.waiting_for_delete_index)
-    await callback.message.edit_text(get_birthdays_list_text(callback.from_user.id) + "\n🗑 Введите номер для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]), disable_web_page_preview=True)
+    await callback.message.edit_text(get_birthdays_list_text(callback.from_user.id, sort_by) + "\n🗑 Введите номер для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]), disable_web_page_preview=True)
 
 @dp.message(AppStates.waiting_for_delete_index)
 async def process_delete(message: Message, state: FSMContext):
     if message.text.isdigit():
-        birthdays = sorted([b for b in get_all_birthdays() if b[0] == message.from_user.id], key=lambda x: x[1].lower())
+        data = await state.get_data()
+        sort_by = data.get('current_sort', 'name')
+        birthdays = get_sorted_birthdays(message.from_user.id, sort_by)
         idx = int(message.text)
         if 1 <= idx <= len(birthdays):
             delete_birthday(message.from_user.id, birthdays[idx-1][1])
@@ -241,13 +279,17 @@ async def process_delete(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "menu_edit_index")
 async def edit_index_start(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    sort_by = data.get('current_sort', 'name')
     await state.set_state(AppStates.waiting_for_edit_index)
-    await callback.message.edit_text(get_birthdays_list_text(callback.from_user.id) + "\n✏️ Введите номер для изменения:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]), disable_web_page_preview=True)
+    await callback.message.edit_text(get_birthdays_list_text(callback.from_user.id, sort_by) + "\n✏️ Введите номер для изменения:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="menu_list")]]), disable_web_page_preview=True)
 
 @dp.message(AppStates.waiting_for_edit_index)
 async def process_edit_index(message: Message, state: FSMContext):
     if message.text.isdigit():
-        birthdays = sorted([b for b in get_all_birthdays() if b[0] == message.from_user.id], key=lambda x: x[1].lower())
+        data = await state.get_data()
+        sort_by = data.get('current_sort', 'name')
+        birthdays = get_sorted_birthdays(message.from_user.id, sort_by)
         idx = int(message.text)
         if 1 <= idx <= len(birthdays):
             await state.update_data(old_name=birthdays[idx-1][1])
