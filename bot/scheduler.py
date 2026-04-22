@@ -59,7 +59,7 @@ async def check_birthdays(bot):
 
             if msg:
                 await bot.send_message(user_id, msg)
-                logging.info(f"Notification sent to {user_id} for {name}")
+                logging.info("Birthday notification sent")
 
         except Exception as e:
-            logging.error(f"Error in scheduler for {name}: {e}")
+            logging.error(f"Error in scheduler: {e}")
