@@ -95,6 +95,34 @@ def get_all_birthdays():
     conn.close()
     return rows
 
+def get_birthdays_for_user(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT user_id, name, birth_date, tg_username FROM birthdays WHERE user_id = ?',
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def iter_all_birthdays(batch_size=1000):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = None
+    try:
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id, name, birth_date, tg_username FROM birthdays')
+        while True:
+            rows = cursor.fetchmany(batch_size)
+            if not rows:
+                break
+            for row in rows:
+                yield row
+    finally:
+        if cursor:
+            cursor.close()
+        conn.close()
+
 def delete_birthday(user_id, name):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()

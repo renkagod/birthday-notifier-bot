@@ -1,19 +1,13 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
-from bot.database import get_all_birthdays
-
-from datetime import datetime, timedelta
-import logging
-from bot.database import get_all_birthdays, get_user_settings
+from bot.database import iter_all_birthdays, get_user_settings
 
 async def check_birthdays(bot):
     now = datetime.now().replace(second=0, microsecond=0)
-    birthdays = get_all_birthdays()
-    
     # Cache user settings to avoid multiple DB calls
     user_settings_cache = {}
 
-    for user_id, name, bday_str, tg_username in birthdays:
+    for user_id, name, bday_str, tg_username in iter_all_birthdays():
         try:
             if user_id not in user_settings_cache:
                 user_settings_cache[user_id] = get_user_settings(user_id)
@@ -65,7 +59,7 @@ async def check_birthdays(bot):
 
             if msg:
                 await bot.send_message(user_id, msg)
-                logging.info(f"Notification sent to {user_id} for {name}")
+                logging.info("Birthday notification sent")
 
         except Exception as e:
-            logging.error(f"Error in scheduler for {name}: {e}")
+            logging.error(f"Error in scheduler: {e}")
