@@ -108,6 +108,7 @@ def get_birthdays_for_user(user_id):
 
 def iter_all_birthdays(batch_size=1000):
     conn = sqlite3.connect(DB_PATH)
+    cursor = None
     try:
         cursor = conn.cursor()
         cursor.execute('SELECT user_id, name, birth_date, tg_username FROM birthdays')
@@ -118,6 +119,8 @@ def iter_all_birthdays(batch_size=1000):
             for row in rows:
                 yield row
     finally:
+        if cursor:
+            cursor.close()
         conn.close()
 
 def delete_birthday(user_id, name):
