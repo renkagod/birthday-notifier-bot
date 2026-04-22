@@ -13,7 +13,7 @@ from aiogram.fsm.state import StatesGroup, State
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot.database import init_db, add_birthday, get_all_birthdays, delete_birthday, update_birthday_info, get_user_settings, update_user_settings
+from bot.database import init_db, add_birthday, get_birthdays_for_user, delete_birthday, update_birthday_info, get_user_settings, update_user_settings
 from bot.scheduler import check_birthdays
 
 load_dotenv()
@@ -53,7 +53,7 @@ def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_sorted_birthdays(user_id, sort_by='name'):
-    birthdays = [b for b in get_all_birthdays() if b[0] == user_id]
+    birthdays = get_birthdays_for_user(user_id)
     if sort_by == 'name':
         return sorted(birthdays, key=lambda x: x[1].lower())
     
@@ -151,8 +151,7 @@ async def process_set_time(message: Message, state: FSMContext):
 # --- UPCOMING ---
 @dp.callback_query(F.data == "menu_upcoming")
 async def upcoming_birthdays(callback: CallbackQuery):
-    birthdays = get_all_birthdays()
-    user_birthdays = [b for b in birthdays if b[0] == callback.from_user.id]
+    user_birthdays = get_birthdays_for_user(callback.from_user.id)
     if not user_birthdays: return await callback.message.edit_text("ℹ️ Список пуст.", reply_markup=get_main_menu())
     
     now = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -202,8 +201,8 @@ async def backup_menu(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "backup_export")
 async def backup_export(callback: CallbackQuery):
-    birthdays = get_all_birthdays()
-    user_data = [{"name": b[1], "date": b[2], "tag": b[3]} for b in birthdays if b[0] == callback.from_user.id]
+    birthdays = get_birthdays_for_user(callback.from_user.id)
+    user_data = [{"name": b[1], "date": b[2], "tag": b[3]} for b in birthdays]
     if not user_data: return await callback.answer("❌ Нечего экспортировать", show_alert=True)
     json_data = json.dumps(user_data, ensure_ascii=False, indent=2)
     file = BufferedInputFile(json_data.encode('utf-8'), filename="birthdays_backup.json")
