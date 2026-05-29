@@ -1,19 +1,45 @@
 import asyncio
-import os
-import logging
 import datetime
-import re
 import json
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, StateFilter
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile
-from aiogram.client.default import DefaultBotProperties
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
-from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import logging
+import os
+import re
 
-from bot.database import init_db, add_birthday, get_birthdays_for_user, delete_birthday, update_birthday_info, get_user_settings, update_user_settings
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dotenv import load_dotenv
+
+from bot.database import (
+    add_birthday,
+    delete_birthday,
+    get_birthdays_for_user,
+    get_user_settings,
+    init_db,
+    update_birthday_info,
+    update_user_settings,
+)
+from bot.dates import (
+    age_turning,
+    days_until,
+    is_valid_notify_time,
+    next_birthday_datetime,
+    parse_birth_date,
+    sort_by_name,
+    sort_by_upcoming,
+)
 from bot.scheduler import check_birthdays
 
 load_dotenv()
@@ -52,23 +78,12 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def get_sorted_birthdays(user_id, sort_by='name'):
+def get_sorted_birthdays(user_id, sort_by="name"):
     birthdays = get_birthdays_for_user(user_id)
-    if sort_by == 'name':
-        return sorted(birthdays, key=lambda x: x[1].lower())
-    
+    if sort_by == "name":
+        return sort_by_name(birthdays)
     now = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    def get_upcoming_date(b):
-        try:
-            b_date = b[2]
-            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
-            target_date = bday_dt.replace(year=now.year)
-            if target_date < now:
-                target_date = target_date.replace(year=now.year + 1)
-            return target_date
-        except: return datetime.datetime.max
-            
-    return sorted(birthdays, key=lambda x: (get_upcoming_date(x), x[1].lower()))
+    return sort_by_upcoming(birthdays, now)
 
 def get_birthdays_list_text(user_id, sort_by='name'):
     user_birthdays = get_sorted_birthdays(user_id, sort_by)
@@ -79,10 +94,9 @@ def get_birthdays_list_text(user_id, sort_by='name'):
     now = datetime.datetime.now()
     for i, (_, b_name, b_date, b_tag) in enumerate(user_birthdays, 1):
         try:
-            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
-            target_date = bday_dt.replace(year=now.year)
-            if target_date < now.replace(hour=0, minute=0, second=0): target_date = target_date.replace(year=now.year + 1)
-            age = target_date.year - bday_dt.year
+            bday_dt = parse_birth_date(b_date)
+            target_date = next_birthday_datetime(bday_dt, now)
+            age = age_turning(bday_dt, target_date)
             name_display = f'<a href="https://t.me/{b_tag.lstrip("@")}">{b_name}</a>' if b_tag else f'<b>{b_name}</b>'
             text += f"{i}. {name_display} — <code>{b_date}</code> (<b>{age}</b>)\n"
         except Exception: text += f"{i}. <b>{b_name}</b> — <code>{b_date}</code>\n"
@@ -142,7 +156,7 @@ async def set_time_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(AppStates.waiting_for_notify_time)
 async def process_set_time(message: Message, state: FSMContext):
-    if re.match(r'^([01]\d|2[0-3]):([0-5]\d)$', message.text):
+    if is_valid_notify_time(message.text):
         update_user_settings(message.from_user.id, notify_time=message.text)
         await message.answer(f"✅ Время уведомлений изменено на <b>{message.text}</b>", reply_markup=get_main_menu())
         await state.clear()
@@ -159,21 +173,19 @@ async def upcoming_birthdays(callback: CallbackQuery):
     
     for _, name, b_date, tag in user_birthdays:
         try:
-            bday_dt = datetime.datetime.strptime(b_date, "%d.%m.%Y")
-            target_date = bday_dt.replace(year=now.year)
-            if target_date < now:
-                target_date = target_date.replace(year=now.year + 1)
-            
-            days_until = (target_date - now).days
-            if days_until <= 30: # Показываем на ближайшие 30 дней
+            bday_dt = parse_birth_date(b_date)
+            target_date = next_birthday_datetime(bday_dt, now)
+            days_left = days_until(target_date, now)
+            if days_left <= 30:
                 upcoming.append({
-                    'name': name,
-                    'date': target_date,
-                    'tag': tag,
-                    'days_until': days_until,
-                    'age': target_date.year - bday_dt.year
+                    "name": name,
+                    "date": target_date,
+                    "tag": tag,
+                    "days_until": days_left,
+                    "age": age_turning(bday_dt, target_date),
                 })
-        except Exception: continue
+        except Exception:
+            continue
         
     upcoming.sort(key=lambda x: x['days_until'])
     
@@ -243,7 +255,6 @@ async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
     if not text: 
         return await callback.message.edit_text("ℹ️ Список пуст.", reply_markup=get_main_menu())
     
-    sort_label = "🔤 По имени" if sort_by == 'name' else "📅 По дате"
     next_sort = 'date' if sort_by == 'name' else 'name'
     next_label = "🔄 Сортировать по дате" if sort_by == 'name' else "🔄 Сортировать по имени"
     
@@ -306,7 +317,7 @@ async def process_edit_data(message: Message, state: FSMContext):
     new_name = re.sub(r'(@\w+)', '', text).strip()
     data = await state.get_data()
     update_birthday_info(message.from_user.id, data['old_name'], new_name, new_tag)
-    await message.answer(f"✅ Обновлено!", reply_markup=get_main_menu())
+    await message.answer("✅ Обновлено!", reply_markup=get_main_menu())
     await state.clear()
 
 # --- ADD BIRTHDAY FLOW ---
