@@ -1,5 +1,6 @@
 # Birthday Notifier Bot
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/renkagod/birthday-notifier-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/renkagod/birthday-notifier-bot/actions/workflows/ci.yml)
 
 Telegram-бот для автоматических напоминаний о днях рождения с современным интерфейсом и гибкими настройками.
@@ -81,4 +82,4 @@ python -m bot.main
 
 ## Лицензия
 
-[MIT](LICENSE)
+[MIT](LICENSE) — Copyright (c) 2026 [renkagod](https://github.com/renkagod).
