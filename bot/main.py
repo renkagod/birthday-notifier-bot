@@ -16,6 +16,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    KeyboardButtonRequestUsers,
     Message,
     ReplyKeyboardMarkup,
 )
@@ -507,10 +508,23 @@ async def add_manual_name_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "add_choose_contact")
 async def add_choose_contact_start(callback: CallbackQuery):
-    kb = [[KeyboardButton(text="👤 Выбрать контакт", request_contact=True)]]
+    kb = [[KeyboardButton(text="👤 Выбрать контакт из Telegram", request_users=KeyboardButtonRequestUsers(request_id=1, user_count=1))]]
     reply_markup = ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
-    await callback.message.answer("Нажмите кнопку ниже для отправки контакта:", reply_markup=reply_markup)
+    await callback.message.answer("Нажмите кнопку ниже, чтобы выбрать контакт из списка чатов Telegram:", reply_markup=reply_markup)
     await callback.answer()
+
+@dp.message(F.user_shared)
+async def process_shared_user(message: Message, state: FSMContext):
+    await state.set_state(AppStates.waiting_for_name)
+    await message.answer(
+        "👤 Контакт выбран.\n\n"
+        "📝 Теперь введите его имя (и @тег, если нужно), а также дату рождения, если хотите добавить в один шаг.\n\n"
+        "Например:\n"
+        "• <code>Иван Иванов @ivan 12.05.1990</code>\n"
+        "• <code>Маша 3 августа</code>\n\n"
+        "Или просто введите имя:",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
 
 @dp.message(F.contact)
 async def process_contact(message: Message, state: FSMContext):
