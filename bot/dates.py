@@ -29,10 +29,18 @@ def is_valid_notify_time(value: str) -> bool:
 
 def next_birthday_datetime(bday_dt: datetime, now: datetime) -> datetime:
     """Midnight (local) of the next calendar occurrence of the birthday."""
-    target = bday_dt.replace(year=now.year, hour=0, minute=0, second=0, microsecond=0)
+    try:
+        target = bday_dt.replace(year=now.year, hour=0, minute=0, second=0, microsecond=0)
+    except ValueError:
+        # For February 29 on non-leap years, notify on March 1st.
+        target = datetime(year=now.year, month=3, day=1, hour=0, minute=0, second=0, microsecond=0)
+        
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if target < today:
-        target = target.replace(year=now.year + 1)
+        try:
+            target = target.replace(year=now.year + 1)
+        except ValueError:
+            target = datetime(year=now.year + 1, month=3, day=1, hour=0, minute=0, second=0, microsecond=0)
     return target
 
 
@@ -64,3 +72,113 @@ def sort_by_upcoming(birthdays: list[tuple], now: datetime) -> list[tuple]:
             return (datetime.max, "")
 
     return sorted(birthdays, key=sort_key)
+
+
+def get_month_from_word(word: str) -> int | None:
+    word = word.lower()
+    if word.startswith("янв") or word.startswith("jan"):
+        return 1
+    if word.startswith("фев") or word.startswith("feb"):
+        return 2
+    if word.startswith("мар") or word.startswith("mar"):
+        return 3
+    if word.startswith("апр") or word.startswith("apr"):
+        return 4
+    if word.startswith("май") or word.startswith("мая") or word.startswith("may"):
+        return 5
+    if word.startswith("июн") or word.startswith("jun"):
+        return 6
+    if word.startswith("июл") or word.startswith("jul"):
+        return 7
+    if word.startswith("авг") or word.startswith("aug"):
+        return 8
+    if word.startswith("сен") or word.startswith("sep"):
+        return 9
+    if word.startswith("окт") or word.startswith("oct"):
+        return 10
+    if word.startswith("ноя") or word.startswith("nov"):
+        return 11
+    if word.startswith("дек") or word.startswith("dec"):
+        return 12
+    return None
+
+
+def parse_natural_date(text: str) -> tuple[int, int, int | None] | None:
+    text = text.strip().lower()
+    
+    # 1. Delimiter format: DD.MM.YYYY or DD.MM.YY or DD.MM
+    match = re.search(r'\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b', text)
+    if match:
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year_str = match.group(3)
+        year = None
+        if year_str:
+            year = int(year_str)
+            if len(year_str) == 2:
+                year += 2000 if year < 50 else 1900
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return day, month, year
+
+    # 2. Text month format: 12 мая 1990 or 3 августа
+    match = re.search(r'\b(\d{1,2})\s+([а-яa-z]+)(?:\s+(\d{2,4}))?\b', text)
+    if match:
+        day = int(match.group(1))
+        month_word = match.group(2)
+        year_str = match.group(3)
+        month = get_month_from_word(month_word)
+        if month:
+            year = None
+            if year_str:
+                year = int(year_str)
+                if len(year_str) == 2:
+                    year += 2000 if year < 50 else 1900
+            if 1 <= day <= 31:
+                return day, month, year
+                
+    return None
+
+
+def extract_name_and_date(text: str) -> tuple[str, str | None, tuple[int, int, int | None] | None]:
+    # Extract @username if present
+    username_match = re.search(r'(@\w+)', text)
+    username = username_match.group(1) if username_match else None
+    
+    text_clean = re.sub(r'(@\w+)', '', text).strip()
+    
+    # Try delimiters first
+    date_tuple = None
+    date_match = re.search(r'\b(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\b', text_clean)
+    if date_match:
+        day = int(date_match.group(1))
+        month = int(date_match.group(2))
+        year_str = date_match.group(3)
+        year = None
+        if year_str:
+            year = int(year_str)
+            if len(year_str) == 2:
+                year += 2000 if year < 50 else 1900
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            date_tuple = (day, month, year)
+            text_clean = text_clean.replace(date_match.group(0), "").strip()
+    else:
+        # Try text month
+        date_match = re.search(r'\b(\d{1,2})\s+([а-яa-z]+)(?:\s+(\d{2,4}))?\b', text_clean, re.IGNORECASE)
+        if date_match:
+            day = int(date_match.group(1))
+            month_word = date_match.group(2)
+            year_str = date_match.group(3)
+            month = get_month_from_word(month_word)
+            if month:
+                year = None
+                if year_str:
+                    year = int(year_str)
+                    if len(year_str) == 2:
+                        year += 2000 if year < 50 else 1900
+                if 1 <= day <= 31:
+                    date_tuple = (day, month, year)
+                    text_clean = text_clean.replace(date_match.group(0), "").strip()
+                    
+    name = re.sub(r'\s+', ' ', text_clean).strip()
+    return name, username, date_tuple
+

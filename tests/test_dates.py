@@ -82,3 +82,40 @@ def test_sort_by_upcoming():
     ]
     sorted_rows = sort_by_upcoming(rows, now)
     assert sorted_rows[0][1] == "Soon"
+
+
+def test_get_month_from_word():
+    from bot.dates import get_month_from_word
+    assert get_month_from_word("января") == 1
+    assert get_month_from_word("Марта") == 3
+    assert get_month_from_word("may") == 5
+    assert get_month_from_word("unknown") is None
+
+
+def test_parse_natural_date():
+    from bot.dates import parse_natural_date
+    assert parse_natural_date("12.05.1990") == (12, 5, 1990)
+    assert parse_natural_date("12/05/90") == (12, 5, 1990)
+    assert parse_natural_date("12-05") == (12, 5, None)
+    assert parse_natural_date("3 августа 2001") == (3, 8, 2001)
+    assert parse_natural_date("22 октября") == (22, 10, None)
+    assert parse_natural_date("not a date") is None
+
+
+def test_extract_name_and_date():
+    from bot.dates import extract_name_and_date
+    assert extract_name_and_date("Иван Иванов @ivan 12.05.1990") == ("Иван Иванов", "@ivan", (12, 5, 1990))
+    assert extract_name_and_date("Маша 3 августа") == ("Маша", None, (3, 8, None))
+    assert extract_name_and_date("Коля @kolya 23.11") == ("Коля", "@kolya", (23, 11, None))
+    assert extract_name_and_date("Просто Имя") == ("Просто Имя", None, None)
+
+
+def test_leap_year_birthday_handling():
+    # February 29 on leap year (2020) -> check next occurrence in non-leap year (2026)
+    bday = datetime(2020, 2, 29)
+    now = datetime(2026, 2, 1, 12, 0)
+    target = next_birthday_datetime(bday, now)
+    # Target should fall back to March 1st (or February 28th, depending on choice)
+    # We implemented March 1st fallback.
+    assert target == datetime(2026, 3, 1)
+

@@ -60,3 +60,37 @@ def test_isolated_db_path(monkeypatch, tmp_path):
 
     monkeypatch.setenv("BIRTHDAY_BOT_DB_PATH", str(db_a))
     assert len(get_all_birthdays()) == 1
+
+
+def test_id_operations(temp_db):
+    from bot.database import (
+        delete_birthday_by_id,
+        get_birthday_by_id,
+        get_birthdays_for_user,
+        update_birthday_date_by_id,
+        update_birthday_info_by_id,
+    )
+    add_birthday(1, "Test Person", "01.01.2000", "@test")
+    user_rows = get_birthdays_for_user(1)
+    b_id = user_rows[0][0]
+    
+    # test get by id
+    row = get_birthday_by_id(b_id)
+    assert row[2] == "Test Person"
+    assert row[3] == "01.01.2000"
+    
+    # test update info
+    update_birthday_info_by_id(b_id, "New Person", "@new")
+    row = get_birthday_by_id(b_id)
+    assert row[2] == "New Person"
+    assert row[4] == "@new"
+    
+    # test update date
+    update_birthday_date_by_id(b_id, "02.02.2002")
+    row = get_birthday_by_id(b_id)
+    assert row[3] == "02.02.2002"
+    
+    # test delete by id
+    delete_birthday_by_id(b_id)
+    assert get_birthday_by_id(b_id) is None
+

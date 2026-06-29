@@ -122,7 +122,7 @@ def get_birthdays_for_user(user_id):
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT user_id, name, birth_date, tg_username FROM birthdays WHERE user_id = ?",
+        "SELECT id, name, birth_date, tg_username FROM birthdays WHERE user_id = ?",
         (user_id,),
     )
     rows = cursor.fetchall()
@@ -165,6 +165,56 @@ def update_birthday_info(user_id, old_name, new_name, new_tag):
         WHERE user_id = ? AND name = ?
         """,
         (new_name, new_tag, user_id, old_name),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_birthday_by_id(b_id):
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, user_id, name, birth_date, tg_username FROM birthdays WHERE id = ?",
+        (b_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def delete_birthday_by_id(b_id):
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM birthdays WHERE id = ?", (b_id,))
+    conn.commit()
+    conn.close()
+
+
+def update_birthday_info_by_id(b_id, name, tg_username):
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE birthdays
+        SET name = ?, tg_username = ?
+        WHERE id = ?
+        """,
+        (name, tg_username, b_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_birthday_date_by_id(b_id, birth_date):
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE birthdays
+        SET birth_date = ?
+        WHERE id = ?
+        """,
+        (birth_date, b_id),
     )
     conn.commit()
     conn.close()
