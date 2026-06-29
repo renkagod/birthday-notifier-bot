@@ -1,85 +1,85 @@
 # Birthday Notifier Bot
 
+**English** | [Русский](README.ru.md)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/renkagod/birthday-notifier-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/renkagod/birthday-notifier-bot/actions/workflows/ci.yml)
 
-Telegram-бот для автоматических напоминаний о днях рождения с современным интерфейсом и гибкими настройками.
+Telegram bot for automatic birthday notifications with a modern interface and flexible settings.
 
-## Особенности
+## Features
 
-- **Интерактивный UI**: управление через inline-кнопки и пошаговый календарь (десятилетие → год → месяц → день).
-- **Умное добавление**: вручную или контакт из записной книжки.
-- **Telegram-теги**: привязка `@username` для упоминаний в уведомлениях.
-- **Гибкие уведомления**:
-  - плановые: за месяц, неделю, 3 дня, завтра или сегодня в выбранное время;
-  - оперативные: за 30 и 5 минут до события;
-  - полночные: поздравление в 00:00 (флаг `-1.0` в настройках).
-- **Сортировка списка**: по имени или по дате наступления.
-- **Бэкапы**: экспорт и импорт списка в JSON.
-- **Docker**: готовый образ, Compose, лимиты CPU/RAM, часовой пояс.
+- **Smart Textual Add**: add birthdays in a single natural language message (e.g., `John @john_tag 15.08.1990` or `Mary 3 August`).
+- **Interactive UI**: manage the list, edit contact details, select dates, and delete contacts entirely through inline buttons with pagination (pages of 8 contacts).
+- **Yearless Dates Support**: skip the birth year (lists will display `DD.MM` format without age).
+- **Contact Import**: add contacts from your Telegram address book in a single click.
+- **Telegram Tags**: automatic `@username` mapping for mentions in notifications.
+- **Flexible Notifications**:
+  - Scheduled: a month, a week, 3 days, tomorrow, or today at a chosen time.
+  - Urgent: 30 minutes and 5 minutes before the event.
+  - Midnight: greeting exactly at 00:00 (`-1.0` flag in settings).
+- **List Sorting**: sort by name (alphabetically) or by upcoming occurrence.
+- **Backups**: export all birthdays to JSON and import them back.
+- **Docker**: ready-to-use Docker image, Compose configuration, resource limits, and timezone settings.
 
-## Быстрый старт (Docker)
+## Quick Start (Docker)
 
-1. Склонируйте репозиторий:
+1. Clone the repository:
 
    ```bash
    git clone https://github.com/renkagod/birthday-notifier-bot.git
    cd birthday-notifier-bot
    ```
 
-2. Настройте конфигурацию:
+2. Configure environment:
 
    ```bash
    cp .env.example .env
-   # Укажите BOT_TOKEN в .env
+   # Set your BOT_TOKEN in .env
    ```
 
-3. Запустите:
+3. Run:
 
    ```bash
    docker compose up -d --build
    ```
 
-## Использование
+## Usage
 
-После запуска отправьте боту `/start`.
+After starting the bot, send `/start`.
 
-- **Мой список** — просмотр дат, сортировка, удаление и редактирование.
-- **Настройки** — время ежедневных напоминаний и интервалы.
-- **Бэкап** — экспорт/импорт JSON.
+- **📅 My List** — interactive menu to view birthdays with page navigation, quick rename, date edit, or deletion.
+- **➕ Add** — add manually, share a contact from Telegram, or use step-by-step interactive calendar.
+- **🔥 Upcoming** — see birthdays in the next 30 days.
+- **⚙️ Settings** — configure the daily reminder time and active intervals (with quick presets).
+- **💾 Backup** — export list to JSON file or restore from file.
 
-## Конфигурация
+## Development & Local Run
 
-| Переменная   | Описание                          |
-| ------------ | --------------------------------- |
-| `BOT_TOKEN`  | Токен от [@BotFather](https://t.me/BotFather) |
-
-Для локальной разработки и тестов можно задать `BIRTHDAY_BOT_DB_PATH` — путь к файлу SQLite (по умолчанию `data/birthdays.db`).
-
-## Разработка
+For development, you will need Python 3.10+:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt -r requirements-dev.txt
-cp .env.example .env        # и укажите BOT_TOKEN
+cp .env.example .env        # specify your BOT_TOKEN
 
+# Run linter and tests
 ruff check bot tests
 pytest -v
+
+# Run bot
 python -m bot.main
 ```
 
-## Структура проекта
+## Configuration
 
-| Путь                 | Назначение                              |
-| -------------------- | --------------------------------------- |
-| `bot/main.py`        | Telegram UI и команды                   |
-| `bot/scheduler.py`   | Планировщик (APScheduler)               |
-| `bot/database.py`    | SQLite                                  |
-| `bot/dates.py`       | Расчёт дат и сортировка (unit-тесты)    |
-| `bot/notifications.py` | Тексты уведомлений (unit-тесты)       |
-| `tests/`             | Pytest                                  |
+| Variable | Description |
+|---|---|
+| `BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 
-## Лицензия
+For local development, you can set the `BIRTHDAY_BOT_DB_PATH` variable to change the path to the SQLite database (defaults to `data/birthdays.db`).
+
+## License
 
 [MIT](LICENSE) — Copyright (c) 2026 [renkagod](https://github.com/renkagod).
