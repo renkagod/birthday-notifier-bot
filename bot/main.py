@@ -701,6 +701,7 @@ async def ignore_callback(callback: CallbackQuery):
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     init_db()
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_birthdays, "interval", minutes=1, args=[bot])
