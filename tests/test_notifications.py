@@ -7,6 +7,11 @@ def test_display_name_with_tag():
     assert display_name("Anna", "@anna") == "<b>Anna</b> (@anna)"
 
 
+def test_display_name_escapes_html():
+    assert display_name("<Bob> & Alice", "@bob&alice") == "<b>&lt;Bob&gt; &amp; Alice</b> (@bob&amp;alice)"
+
+
+
 def test_midnight_notification():
     now = datetime(2026, 6, 20, 0, 0)
     msg = build_birthday_notification(

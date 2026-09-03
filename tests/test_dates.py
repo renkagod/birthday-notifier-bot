@@ -119,3 +119,14 @@ def test_leap_year_birthday_handling():
     # We implemented March 1st fallback.
     assert target == datetime(2026, 3, 1)
 
+
+def test_invalid_calendar_dates():
+    from bot.dates import parse_natural_date
+    assert parse_natural_date("31.02.2024") is None
+    assert parse_natural_date("31.04.2024") is None
+    assert parse_natural_date("29.02.2023") is None
+    assert parse_natural_date("29.02.2024") == (29, 2, 2024)
+    assert parse_natural_date("29.02") == (29, 2, None)
+    assert parse_natural_date("31 февраля") is None
+
+

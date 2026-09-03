@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from datetime import datetime, time
 
 from bot.dates import (
@@ -14,9 +15,11 @@ from bot.dates import (
 
 
 def display_name(name: str, tg_username: str | None) -> str:
-    label = f"<b>{name}</b>"
+    safe_name = html.escape(name)
+    label = f"<b>{safe_name}</b>"
     if tg_username:
-        label += f" ({tg_username})"
+        safe_tag = html.escape(tg_username)
+        label += f" ({safe_tag})"
     return label
 
 

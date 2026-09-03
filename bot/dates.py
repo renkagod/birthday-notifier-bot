@@ -103,6 +103,15 @@ def get_month_from_word(word: str) -> int | None:
     return None
 
 
+def is_valid_calendar_date(day: int, month: int, year: int | None) -> bool:
+    try:
+        test_year = year if year is not None else 2000
+        datetime(test_year, month, day)
+        return True
+    except (ValueError, OverflowError):
+        return False
+
+
 def parse_natural_date(text: str) -> tuple[int, int, int | None] | None:
     text = text.strip().lower()
     
@@ -117,7 +126,7 @@ def parse_natural_date(text: str) -> tuple[int, int, int | None] | None:
             year = int(year_str)
             if len(year_str) == 2:
                 year += 2000 if year < 50 else 1900
-        if 1 <= month <= 12 and 1 <= day <= 31:
+        if is_valid_calendar_date(day, month, year):
             return day, month, year
 
     # 2. Text month format: 12 мая 1990 or 3 августа
@@ -133,7 +142,7 @@ def parse_natural_date(text: str) -> tuple[int, int, int | None] | None:
                 year = int(year_str)
                 if len(year_str) == 2:
                     year += 2000 if year < 50 else 1900
-            if 1 <= day <= 31:
+            if is_valid_calendar_date(day, month, year):
                 return day, month, year
                 
     return None
@@ -158,7 +167,7 @@ def extract_name_and_date(text: str) -> tuple[str, str | None, tuple[int, int, i
             year = int(year_str)
             if len(year_str) == 2:
                 year += 2000 if year < 50 else 1900
-        if 1 <= month <= 12 and 1 <= day <= 31:
+        if is_valid_calendar_date(day, month, year):
             date_tuple = (day, month, year)
             text_clean = text_clean.replace(date_match.group(0), "").strip()
     else:
@@ -175,7 +184,7 @@ def extract_name_and_date(text: str) -> tuple[str, str | None, tuple[int, int, i
                     year = int(year_str)
                     if len(year_str) == 2:
                         year += 2000 if year < 50 else 1900
-                if 1 <= day <= 31:
+                if is_valid_calendar_date(day, month, year):
                     date_tuple = (day, month, year)
                     text_clean = text_clean.replace(date_match.group(0), "").strip()
                     
