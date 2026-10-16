@@ -12,7 +12,7 @@ from bot.dates import (
     next_birthday_datetime,
     parse_birth_date,
 )
-from bot.screens import md, years_word
+from bot.screens import cb, md, row, tag_url, url_button, years_word
 
 
 def display_name(name: str, tg_username: str | None) -> str:
@@ -36,7 +36,28 @@ def build_birthday_notification(
     notify_time: time,
     intervals: list[float],
 ) -> str | None:
-    """Rich Markdown text of the notification due right now, or None."""
+    """Rich Markdown notification due right now (with its buttons), or None."""
+    text = _notification_text(
+        name=name, bday_str=bday_str, tg_username=tg_username,
+        now=now, notify_time=notify_time, intervals=intervals,
+    )
+    if text is None:
+        return None
+    buttons = [cb("🏠 Главная", "home")]
+    if tg_username:
+        buttons.insert(0, url_button("💬 Поздравить", tag_url(tg_username), "success"))
+    return f"{text}\n\n{row(*buttons)}"
+
+
+def _notification_text(
+    *,
+    name: str,
+    bday_str: str,
+    tg_username: str | None,
+    now: datetime,
+    notify_time: time,
+    intervals: list[float],
+) -> str | None:
     bday_dt = parse_birth_date(bday_str)
     target_date = next_birthday_datetime(bday_dt, now)
     is_yearless = bday_dt.year == YEARLESS_YEAR

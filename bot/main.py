@@ -1,5 +1,4 @@
 import asyncio
-import calendar
 import datetime
 import io
 import json
@@ -17,9 +16,6 @@ from aiogram.types import (
     BotCommand,
     BufferedInputFile,
     CallbackQuery,
-    DisabledButton,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     InputRichMessage,
     KeyboardButton,
     KeyboardButtonRequestUsers,
@@ -51,7 +47,6 @@ from bot.dates import (
     parse_birth_date,
     parse_natural_date,
     sort_by_name,
-    sort_by_upcoming,
 )
 from bot.scheduler import check_birthdays
 
@@ -61,77 +56,64 @@ TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("No BOT_TOKEN provided in .env file")
 
-# No default parse_mode: every screen is a rich message with Markdown content.
+# No default parse_mode: every screen is a rich message with Markdown content and its
+# controls inside the message (no inline keyboards).
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 # Answers every callback query after its handler, so buttons never hang in "loading".
 dp.callback_query.middleware(CallbackAnswerMiddleware())
 
-ITEMS_PER_PAGE = 8
 CANCEL_TEXT = "❌ Отмена"
-TIME_PRESETS = ["07:00", "08:00", "09:00", "10:00", "12:00", "18:00", "20:00", "21:00"]
-MONTHS_SHORT = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
 TAG_RE = re.compile(r"@\w{1,32}")
+STALE = "⌛ Этот шаг устарел, начните заново."
 
 BOT_COMMANDS = [
-    BotCommand(command="start", description="Главное меню"),
+    BotCommand(command="start", description="Главная"),
     BotCommand(command="add", description="Добавить день рождения"),
-    BotCommand(command="list", description="Мой список"),
-    BotCommand(command="upcoming", description="Ближайшие дни рождения"),
-    BotCommand(command="settings", description="Настройки уведомлений"),
+    BotCommand(command="list", description="Весь список"),
+    BotCommand(command="settings", description="Настройки"),
     BotCommand(command="help", description="Как пользоваться"),
     BotCommand(command="cancel", description="Отменить действие"),
 ]
 
+# Callbacks of the previous interface, so buttons on old messages keep working.
+LEGACY_HOME = {"menu_start", "ignore"}
+LEGACY_LIST = {"menu_list", "menu_list:name", "menu_list:date", "menu_upcoming"}
+LEGACY_SETTINGS = {"menu_settings", "menu_backup", "set_time", "set_intervals"}
+
 
 class AppStates(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_decade = State()
-    waiting_for_year = State()
-    waiting_for_month = State()
-    waiting_for_day = State()
-    waiting_for_edit_data = State()
-    waiting_for_edit_date = State()
-    waiting_for_notify_time = State()
-    waiting_for_import = State()
-    waiting_for_confirm_add = State()
-    waiting_for_contact_date = State()
+    adding = State()          # waiting for "name [@tag] [date]"
+    adding_date = State()     # name known, waiting for a date
+    picking = State()         # calendar picker is open
+    confirm_replace = State()
+    editing_name = State()
+    editing_date = State()
+    settings = State()        # settings open: a typed time sets notify_time
+    importing = State()
 
 
 # --- Rendering helpers ---
 
-def btn(text, data=None, *, url=None, style=None):
-    return InlineKeyboardButton(text=text, callback_data=data, url=url, style=style)
-
-
-def label(text):
-    """Non-clickable button used as a caption inside keyboards."""
-    return InlineKeyboardButton(text=text, disabled=DisabledButton())
-
-
-def kb(*rows):
-    return InlineKeyboardMarkup(inline_keyboard=[list(row) for row in rows if row])
-
-
-async def show(target: Message | CallbackQuery, text: str, markup=None) -> None:
+async def show(target: Message | CallbackQuery, text: str) -> None:
     """Edit the screen a button was pressed on, or send a new rich message."""
     rich = InputRichMessage(markdown=text)
     if isinstance(target, CallbackQuery):
         if isinstance(target.message, Message):
             try:
-                await target.message.edit_text(rich_message=rich, reply_markup=markup)
+                # No reply_markup: also strips inline keyboards from pre-rich screens.
+                await target.message.edit_text(rich_message=rich)
                 return
             except TelegramBadRequest as e:
                 if "not modified" in str(e):
                     return
-                # Old plain-text screens or documents can't become rich messages: send anew.
                 logging.debug("Falling back to a new message: %s", e)
-        await bot.send_rich_message(target.from_user.id, rich, reply_markup=markup)
+        await bot.send_rich_message(target.from_user.id, rich)
     else:
-        await target.answer_rich(rich, reply_markup=markup)
+        await target.answer_rich(rich)
 
 
-def now_today():
+def today():
     return datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
 
@@ -159,268 +141,484 @@ def name_error(name: str) -> str | None:
     return None
 
 
-# --- Keyboards ---
-
-def main_menu():
-    return kb(
-        [btn("➕ Добавить", "menu_add", style="primary"), btn("📅 Мой список", "menu_list")],
-        [btn("🔥 Ближайшие", "menu_upcoming"), btn("⚙️ Настройки", "menu_settings")],
-        [btn("💾 Бэкап", "menu_backup"), btn("❓ Помощь", "menu_help")],
-    )
+def stored_date(day: int, month: int, year: int | None) -> str:
+    return f"{day:02d}.{month:02d}.{year or YEARLESS_YEAR}"
 
 
-def back_to_menu_kb():
-    return kb([btn("🏠 Меню", "menu_start")])
+def cb_id(data: str) -> int:
+    """Record id from "action:<id>" and legacy "action:<id>:<page>:<sort>"."""
+    return int(data.split(":")[1])
 
 
-def cancel_kb(data="menu_start"):
-    return kb([btn("❌ Отмена", data)])
+# --- Screens ---
 
-
-def get_sorted_birthdays(user_id, sort_by="name"):
-    birthdays = get_birthdays_for_user(user_id)
-    if sort_by == "name":
-        return sort_by_name(birthdays)
-    return sort_by_upcoming(birthdays, now_today())
-
-
-def list_screen(user_id, page=0, sort_by="name"):
-    birthdays = get_sorted_birthdays(user_id, sort_by)
-    if not birthdays:
-        return screens.render_empty_list(), kb(
-            [btn("➕ Добавить", "menu_add", style="primary"), btn("🏠 Меню", "menu_start")]
-        )
-
-    total_pages = (len(birthdays) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    page = max(0, min(page, total_pages - 1))
-    page_items = birthdays[page * ITEMS_PER_PAGE:(page + 1) * ITEMS_PER_PAGE]
-    text = screens.render_list(
-        page_items, now=now_today(), sort_by=sort_by,
-        page=page, total_pages=total_pages, total=len(birthdays),
-    )
-
-    rows = []
-    for i in range(0, len(page_items), 2):
-        rows.append([
-            btn(f"👤 {name[:28]}", f"view_bday:{b_id}:{page}:{sort_by}")
-            for b_id, name, _date, _tag in page_items[i:i + 2]
-        ])
-    if total_pages > 1:
-        rows.append([
-            btn("◀️", f"list_page:{page - 1}:{sort_by}") if page > 0 else label(" "),
-            label(f"{page + 1} / {total_pages}"),
-            btn("▶️", f"list_page:{page + 1}:{sort_by}") if page < total_pages - 1 else label(" "),
-        ])
-    next_sort = "date" if sort_by == "name" else "name"
-    sort_label = "🔄 По дате" if sort_by == "name" else "🔄 По имени"
-    rows.append([
-        btn(sort_label, f"list_page:0:{next_sort}"),
-        btn("➕", "menu_add"),
-        btn("🏠 Меню", "menu_start"),
-    ])
-    return text, kb(*rows)
-
-
-def card_kb(b_id, page, sort_by, tag=None, after_add=False):
-    rows = [
-        [btn("✏️ Имя и тег", f"edit_info:{b_id}:{page}:{sort_by}"),
-         btn("📅 Дата", f"edit_date:{b_id}:{page}:{sort_by}")],
-    ]
-    if tag:
-        rows.append([btn("💬 Написать", url=f"https://t.me/{tag.lstrip('@')}")])
-    if after_add:
-        rows.append([btn("➕ Добавить ещё", "menu_add", style="primary")])
-    rows.append([btn("🗑 Удалить", f"delete_confirm:{b_id}:{page}:{sort_by}", style="danger")])
-    rows.append([btn("📅 К списку", f"list_page:{page}:{sort_by}"), btn("🏠 Меню", "menu_start")])
-    return kb(*rows)
-
-
-async def show_card(target, b_id, page=0, sort_by="name", notice=None, after_add=False):
-    row = get_user_birthday(b_id, target.from_user.id)
-    if not row:
-        text, markup = list_screen(target.from_user.id, page, sort_by)
-        return await show(target, text, markup)
-    _, _, name, b_date, tag = row
-    await show(
-        target,
-        screens.render_card(name, b_date, tag, now_today(), notice=notice),
-        card_kb(b_id, page, sort_by, tag, after_add=after_add),
-    )
-
-
-async def show_home(target, notice=None):
+async def show_home(target, state: FSMContext, notice=None):
+    await state.clear()
     user_id = target.from_user.id
     settings = get_user_settings(user_id)
-    text = screens.render_home(
-        get_birthdays_for_user(user_id), now_today(), settings["notify_time"],
+    await show(target, screens.render_home(
+        get_birthdays_for_user(user_id), today(), settings["notify_time"],
         notice=notice, reminders_on=bool(settings["intervals"]),
-    )
-    await show(target, text, main_menu())
+    ))
 
 
-def parse_nav(data: str) -> tuple[int, int, str]:
-    _, b_id, page, sort_by = data.split(":")
-    return int(b_id), int(page), sort_by
+async def show_list(target, state: FSMContext, page=0):
+    await state.clear()
+    await show(target, screens.render_list(get_birthdays_for_user(target.from_user.id), today(), page))
+
+
+async def show_card(target, state: FSMContext, b_id, notice=None, undo=False):
+    await state.clear()
+    row = get_user_birthday(b_id, target.from_user.id)
+    if not row:
+        return await show_home(target, state, notice="Такой записи уже нет.")
+    _, _, name, b_date, tag = row
+    await show(target, screens.render_card(b_id, name, b_date, tag, today(), notice=notice, undo=undo))
+
+
+async def show_settings(target, state: FSMContext, notice=None):
+    await state.set_state(AppStates.settings)
+    user_id = target.from_user.id
+    s = get_user_settings(user_id)
+    total = len(get_birthdays_for_user(user_id))
+    await show(target, screens.render_settings(s["notify_time"], s["intervals"], total, notice=notice))
+
+
+async def save_new(target, state: FSMContext, name, tag, day, month, year):
+    """Save a new person, or ask before replacing someone with the same name."""
+    user_id = target.from_user.id
+    existing = find_birthday_id(user_id, name)
+    if existing is not None:
+        old = get_user_birthday(existing, user_id)
+        await state.set_state(AppStates.confirm_replace)
+        await state.update_data(name=name, tg_username=tag, day=day, month=month, year=year)
+        return await show(target, screens.render_replace_confirm(name, tag, day, month, year, old[3]))
+    b_id = add_birthday(user_id, name, stored_date(day, month, year), tag)
+    await show_card(target, state, b_id, notice="✅ Добавлено", undo=True)
+
+
+async def ask_date(target, state: FSMContext, name: str, tag: str | None):
+    await state.set_state(AppStates.adding_date)
+    await state.update_data(name=name, tg_username=tag, calendar_mode="add")
+    await show(target, screens.render_date_prompt(name, tag))
+
+
+async def handle_free_text(message: Message, state: FSMContext, text: str):
+    """Text outside any flow: "Name @tag date" adds, a bare name searches."""
+    name, tag, date_tuple = extract_name_and_date(text)
+    if date_tuple:
+        error = name_error(name) or date_error(date_tuple)
+        if error:
+            return await show(message, screens.screen(error, screens.home_row()))
+        return await save_new(message, state, name, tag, *date_tuple)
+
+    query = " ".join(text.split())
+    if name_error(name):
+        return await show(message, screens.screen(
+            "🤔 Не понял. Напишите `Имя дата`, чтобы добавить человека, или имя, чтобы найти.",
+            screens.home_row(),
+        ))
+    rows = get_birthdays_for_user(message.from_user.id)
+    needle = query.lower()
+    exact = [r for r in rows if r[1].lower() == needle]
+    if len(exact) == 1:
+        return await show_card(message, state, exact[0][0])
+    matches = [r for r in rows if needle in r[1].lower()]
+    await state.clear()
+    await state.update_data(name=name, tg_username=tag)
+    await show(message, screens.render_search(query, matches, today()))
 
 
 # --- Commands ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
-    await state.clear()
-    await show_home(message)
+    await show_home(message, state)
 
 
 @dp.message(Command("help"))
-async def cmd_help(message: Message):
-    await show(message, screens.render_help(), back_to_menu_kb())
+async def cmd_help(message: Message, state: FSMContext):
+    await state.clear()
+    await show(message, screens.render_help())
 
 
 @dp.message(Command("add"))
 async def cmd_add(message: Message, state: FSMContext):
-    await state.clear()
-    await show(message, screens.render_add_menu(), add_menu_kb())
+    await state.set_state(AppStates.adding)
+    await show(message, screens.render_add_prompt())
 
 
-@dp.message(Command("list"))
+@dp.message(Command("list", "upcoming"))
 async def cmd_list(message: Message, state: FSMContext):
-    await state.clear()
-    await show(message, *list_screen(message.from_user.id, 0, "name"))
-
-
-@dp.message(Command("upcoming"))
-async def cmd_upcoming(message: Message, state: FSMContext):
-    await state.clear()
-    await show(message, *list_screen(message.from_user.id, 0, "date"))
+    await show_list(message, state)
 
 
 @dp.message(Command("settings"))
 async def cmd_settings(message: Message, state: FSMContext):
-    await state.clear()
-    await show(message, *settings_screen(message.from_user.id))
+    await show_settings(message, state)
 
 
 @dp.message(Command("cancel"))
 @dp.message(F.text == CANCEL_TEXT)
 async def cmd_cancel(message: Message, state: FSMContext):
     had_state = await state.get_state() is not None
-    await state.clear()
     await message.answer_rich(
-        InputRichMessage(markdown="❌ Действие отменено." if had_state else "Отменять нечего."),
+        InputRichMessage(markdown="❌ Отменено." if had_state else "Отменять нечего."),
         reply_markup=ReplyKeyboardRemove(),
     )
-    await show_home(message)
+    await show_home(message, state)
 
 
-@dp.callback_query(F.data == "menu_start")
-async def back_to_menu(callback: CallbackQuery, state: FSMContext):
+# --- Navigation ---
+
+@dp.callback_query(F.data.in_({"home"} | LEGACY_HOME))
+async def cb_home(callback: CallbackQuery, state: FSMContext):
+    await show_home(callback, state)
+
+
+@dp.callback_query(F.data.in_({"help", "menu_help"}))
+async def cb_help(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await show_home(callback)
+    await show(callback, screens.render_help())
 
 
-@dp.callback_query(F.data == "menu_help")
-async def menu_help(callback: CallbackQuery):
-    await show(callback, screens.render_help(), back_to_menu_kb())
+@dp.callback_query(F.data.startswith("list:") | F.data.in_(LEGACY_LIST))
+async def cb_list(callback: CallbackQuery, state: FSMContext):
+    page = int(callback.data.split(":")[1]) if callback.data.startswith("list:") else 0
+    await show_list(callback, state, page)
 
 
-# --- SETTINGS ---
-
-def settings_screen(user_id, notice=None):
-    s = get_user_settings(user_id)
-    return screens.render_settings(s["notify_time"], s["intervals"], notice=notice), kb(
-        [btn("⏰ Время", "set_time"), btn("🔔 Когда напоминать", "set_intervals")],
-        [btn("🏠 Меню", "menu_start")],
-    )
+@dp.callback_query(F.data.startswith("list_page:"))
+async def cb_legacy_list_page(callback: CallbackQuery, state: FSMContext):
+    await show_list(callback, state)
 
 
-def intervals_screen(user_id):
-    s = get_user_settings(user_id)
-    current = s["intervals"]
-
-    def toggle(value, text):
-        return btn(f"{'✅' if value in current else '▫️'} {text}", f"toggle_int:{value}")
-
-    timed = [toggle(v, t) for v, t in screens.TIMED_INTERVALS]
-    exact = [toggle(v, t) for v, t in screens.EXACT_INTERVALS]
-    return screens.render_intervals(current, s["notify_time"]), kb(
-        [label(f"В {s['notify_time']}")],
-        timed[0:2], timed[2:4], timed[4:],
-        [label("Ровно к началу дня")],
-        *[[b] for b in exact],
-        [btn("🔔 Всё", "preset_int:all"), btn("⭐ Стандарт", "preset_int:default"),
-         btn("🔕 Ничего", "preset_int:none")],
-        [btn("🔙 Настройки", "menu_settings")],
-    )
+@dp.callback_query(F.data.startswith("view:") | F.data.startswith("view_bday:"))
+async def cb_view(callback: CallbackQuery, state: FSMContext):
+    await show_card(callback, state, cb_id(callback.data))
 
 
-@dp.callback_query(F.data == "menu_settings")
-async def settings_main(callback: CallbackQuery, state: FSMContext):
+# --- Card actions ---
+
+@dp.callback_query(F.data.startswith("del:") | F.data.startswith("delete_confirm:"))
+async def cb_delete(callback: CallbackQuery, state: FSMContext):
+    b_id = cb_id(callback.data)
+    row = get_user_birthday(b_id, callback.from_user.id)
+    if not row:
+        return await show_home(callback, state)
+    await show(callback, screens.render_delete_confirm(b_id, row[2]))
+
+
+@dp.callback_query(F.data.startswith("del_yes:") | F.data.startswith("delete_execute:"))
+async def cb_delete_yes(callback: CallbackQuery, state: FSMContext):
+    b_id = cb_id(callback.data)
+    row = get_user_birthday(b_id, callback.from_user.id)
+    notice = None
+    if row:
+        delete_birthday_by_id(b_id)
+        notice = f"🗑 Запись **{screens.md(row[2])}** удалена."
+    await show_home(callback, state, notice=notice)
+
+
+@dp.callback_query(F.data.startswith("undo:"))
+async def cb_undo(callback: CallbackQuery, state: FSMContext, callback_answer: CallbackAnswer):
+    b_id = cb_id(callback.data)
+    row = get_user_birthday(b_id, callback.from_user.id)
+    if row:
+        delete_birthday_by_id(b_id)
+        callback_answer.text = f"↩️ Отменено: {row[2]}"
+    await show_home(callback, state)
+
+
+@dp.callback_query(F.data.startswith("edit_name:") | F.data.startswith("edit_info:"))
+async def cb_edit_name(callback: CallbackQuery, state: FSMContext):
+    b_id = cb_id(callback.data)
+    row = get_user_birthday(b_id, callback.from_user.id)
+    if not row:
+        return await show_home(callback, state)
+    await state.set_state(AppStates.editing_name)
+    await state.update_data(edit_b_id=b_id)
+    await show(callback, screens.render_edit_name_prompt(b_id, row[2], row[4]))
+
+
+@dp.message(AppStates.editing_name, F.text)
+async def msg_edit_name(message: Message, state: FSMContext):
+    text = message.text.strip()
+    match = TAG_RE.search(text)
+    new_tag = match.group(0) if match else None
+    new_name = " ".join(TAG_RE.sub("", text).split())
+    b_id = (await state.get_data())["edit_b_id"]
+    back = screens.cancel_row(f"view:{b_id}")
+
+    error = name_error(new_name)
+    if error:
+        return await show(message, screens.screen(error, back))
+    if not get_user_birthday(b_id, message.from_user.id):
+        return await show_home(message, state)
+    try:
+        update_birthday_info_by_id(b_id, new_name, new_tag)
+    except sqlite3.IntegrityError:
+        return await show(message, screens.screen(
+            f"❌ **{screens.md(new_name)}** уже есть в списке. Введите другое имя.", back
+        ))
+    await show_card(message, state, b_id, notice="✅ Сохранено")
+
+
+@dp.callback_query(F.data.startswith("edit_date:"))
+async def cb_edit_date(callback: CallbackQuery, state: FSMContext):
+    b_id = cb_id(callback.data)
+    row = get_user_birthday(b_id, callback.from_user.id)
+    if not row:
+        return await show_home(callback, state)
+    await state.set_state(AppStates.editing_date)
+    await state.update_data(edit_b_id=b_id, name=row[2], calendar_mode="edit")
+    await show(callback, screens.render_edit_date_prompt(b_id, row[2], row[3]))
+
+
+@dp.message(AppStates.editing_date, F.text)
+async def msg_edit_date(message: Message, state: FSMContext):
+    b_id = (await state.get_data())["edit_b_id"]
+    date_tuple = parse_date_input(message.text.strip())
+    error = date_error(date_tuple)
+    if error:
+        return await show(message, screens.screen(error, *screens.edit_date_rows(b_id)))
+    if get_user_birthday(b_id, message.from_user.id):
+        update_birthday_date_by_id(b_id, stored_date(*date_tuple))
+    await show_card(message, state, b_id, notice="✅ Дата обновлена")
+
+
+# --- Adding ---
+
+@dp.callback_query(F.data.in_({"add", "menu_add", "add_manual_name"}))
+async def cb_add(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await show(callback, *settings_screen(callback.from_user.id))
+    await state.set_state(AppStates.adding)
+    await show(callback, screens.render_add_prompt())
 
 
-@dp.callback_query(F.data == "set_time")
-async def process_set_time_start(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AppStates.waiting_for_notify_time)
-    current = get_user_settings(callback.from_user.id)["notify_time"]
-    presets = [
-        btn(f"• {t} •" if t == current else t, f"time_preset:{t}") for t in TIME_PRESETS
-    ]
-    await show(
-        callback,
-        screens.render_time_prompt(current),
-        kb(presets[:4], presets[4:], [btn("🔙 Настройки", "menu_settings")]),
+@dp.message(AppStates.adding, F.text)
+async def msg_adding(message: Message, state: FSMContext):
+    name, tag, date_tuple = extract_name_and_date(message.text.strip())
+    back = screens.cancel_row()
+    error = name_error(name)
+    if error:
+        return await show(message, screens.screen(error, back))
+    tag = tag or (await state.get_data()).get("tg_username")
+    if date_tuple:
+        error = date_error(date_tuple)
+        if error:
+            return await show(message, screens.screen(error, back))
+        return await save_new(message, state, name, tag, *date_tuple)
+    await ask_date(message, state, name, tag)
+
+
+@dp.callback_query(F.data == "add_pending")
+async def cb_add_pending(callback: CallbackQuery, state: FSMContext):
+    """"Add" on a search result: the searched name is already in FSM data."""
+    data = await state.get_data()
+    if not data.get("name"):
+        await state.set_state(AppStates.adding)
+        return await show(callback, screens.render_add_prompt())
+    await ask_date(callback, state, data["name"], data.get("tg_username"))
+
+
+@dp.message(AppStates.adding_date, F.text)
+async def msg_adding_date(message: Message, state: FSMContext):
+    data = await state.get_data()
+    date_tuple = parse_date_input(message.text.strip())
+    error = date_error(date_tuple)
+    if error:
+        return await show(message, screens.screen(error, *screens.date_prompt_rows()))
+    await save_new(message, state, data["name"], data.get("tg_username"), *date_tuple)
+
+
+@dp.callback_query(F.data.in_({"confirm_yes", "confirm_add_yes"}))
+async def cb_confirm_replace(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not {"name", "day", "month"} <= data.keys():
+        return await show_home(callback, state, notice=STALE)
+    b_id = add_birthday(
+        callback.from_user.id, data["name"],
+        stored_date(data["day"], data["month"], data.get("year")), data.get("tg_username"),
+    )
+    await show_card(callback, state, b_id, notice="✅ Запись обновлена")
+
+
+@dp.callback_query(F.data.in_({"add_tg", "add_choose_contact"}))
+async def cb_add_tg(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    request = KeyboardButtonRequestUsers(
+        request_id=1, max_quantity=1, user_is_bot=False, request_name=True, request_username=True,
+    )
+    markup = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="👤 Выбрать человека", request_users=request)],
+                  [KeyboardButton(text=CANCEL_TEXT)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await callback.message.answer_rich(
+        InputRichMessage(markdown=(
+            "## 👤 Выбор из Telegram\n\n"
+            "Нажмите **👤 Выбрать человека** под полем ввода. "
+            "Имя и @тег я подставлю сам, останется только дата."
+        )),
+        reply_markup=markup,
     )
 
 
-@dp.callback_query(F.data.startswith("time_preset:"))
-async def process_time_preset(callback: CallbackQuery, state: FSMContext, callback_answer: CallbackAnswer):
-    time_str = callback.data.split(":", 1)[1]
-    if not normalize_notify_time(time_str):
+@dp.message(F.users_shared)
+async def msg_users_shared(message: Message, state: FSMContext):
+    shared = message.users_shared.users[0]
+    name = " ".join(filter(None, [shared.first_name, shared.last_name]))
+    tag = f"@{shared.username}" if shared.username else None
+    await message.answer_rich(
+        InputRichMessage(markdown=f"👤 Выбран: **{screens.md(name or tag or 'без имени')}**"),
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    if name_error(name):
+        await state.set_state(AppStates.adding)
+        await state.update_data(tg_username=tag)
+        return await show(message, screens.render_add_prompt(prefilled_tag=tag))
+    await ask_date(message, state, name, tag)
+
+
+@dp.message(F.contact)
+async def msg_contact(message: Message, state: FSMContext):
+    name = " ".join(filter(None, [message.contact.first_name, message.contact.last_name]))
+    await message.answer_rich(
+        InputRichMessage(markdown="👤 Контакт получен."), reply_markup=ReplyKeyboardRemove()
+    )
+    if name_error(name):
+        await state.set_state(AppStates.adding)
+        return await show(message, screens.render_add_prompt())
+    await ask_date(message, state, name, None)
+
+
+# --- Calendar picker ---
+
+async def picker_data(callback: CallbackQuery, state: FSMContext, *keys) -> dict | None:
+    data = await state.get_data()
+    if data.get("calendar_mode") not in ("add", "edit") or not set(keys) <= data.keys():
+        await show_home(callback, state, notice=STALE)
+        return None
+    return data
+
+
+@dp.callback_query(F.data.in_({"cal", "add_contact_calendar", "edit_date_calendar", "confirm_add_manual"}))
+async def cb_calendar(callback: CallbackQuery, state: FSMContext):
+    data = await picker_data(callback, state, "name")
+    if data is None:
         return
-    update_user_settings(callback.from_user.id, notify_time=time_str)
-    await state.clear()
-    callback_answer.text = f"⏰ Напоминаю в {time_str}"
-    await show(callback, *settings_screen(callback.from_user.id, notice=f"✅ Время напоминаний: **{time_str}**"))
+    await state.set_state(AppStates.picking)
+    await show(callback, screens.render_decade_picker(data["name"], datetime.date.today().year))
 
 
-@dp.message(AppStates.waiting_for_notify_time, F.text)
-async def process_notify_time(message: Message, state: FSMContext):
-    time_str = normalize_notify_time(message.text)
-    if not time_str:
-        return await show(
-            message,
-            "❌ Не понял время. Пришлите его в формате `ЧЧ:ММ`, например `09:00` или `18:30`.",
-            cancel_kb("menu_settings"),
-        )
-    update_user_settings(message.from_user.id, notify_time=time_str)
-    await state.clear()
-    await show(message, *settings_screen(message.from_user.id, notice=f"✅ Время напоминаний: **{time_str}**"))
+@dp.callback_query(F.data == "back_dec")
+async def cb_back_decade(callback: CallbackQuery, state: FSMContext):
+    await cb_calendar(callback, state)
 
 
-@dp.callback_query(F.data == "set_intervals")
-async def set_intervals_menu(callback: CallbackQuery):
-    await show(callback, *intervals_screen(callback.from_user.id))
+@dp.callback_query(F.data.startswith("dec:"))
+async def cb_decade(callback: CallbackQuery, state: FSMContext):
+    data = await picker_data(callback, state, "name")
+    if data is None:
+        return
+    decade = int(callback.data.split(":")[1])
+    await state.update_data(decade=decade)
+    await show(callback, screens.render_year_picker(data["name"], decade, datetime.date.today().year))
 
 
-@dp.callback_query(F.data.startswith("toggle_int:"))
-async def process_toggle_int(callback: CallbackQuery, callback_answer: CallbackAnswer):
+@dp.callback_query(F.data == "back_year")
+async def cb_back_year(callback: CallbackQuery, state: FSMContext):
+    data = await picker_data(callback, state, "name", "decade")
+    if data is None:
+        return
+    await show(callback, screens.render_year_picker(data["name"], data["decade"], datetime.date.today().year))
+
+
+@dp.callback_query(F.data.startswith("year:") | (F.data == "noyear"))
+async def cb_year(callback: CallbackQuery, state: FSMContext):
+    data = await picker_data(callback, state, "name")
+    if data is None:
+        return
+    year = YEARLESS_YEAR if callback.data == "noyear" else int(callback.data.split(":")[1])
+    await state.update_data(year=year)
+    await show(callback, screens.render_month_picker(data["name"], year))
+
+
+@dp.callback_query(F.data == "back_month")
+async def cb_back_month(callback: CallbackQuery, state: FSMContext):
+    data = await picker_data(callback, state, "name", "year")
+    if data is None:
+        return
+    await show(callback, screens.render_month_picker(data["name"], data["year"]))
+
+
+@dp.callback_query(F.data.startswith("month:"))
+async def cb_month(callback: CallbackQuery, state: FSMContext):
+    data = await picker_data(callback, state, "name", "year")
+    if data is None:
+        return
+    month = int(callback.data.split(":")[1])
+    await state.update_data(month=month)
+    await show(callback, screens.render_day_picker(data["name"], data["year"], month))
+
+
+@dp.callback_query(F.data.startswith("day:"))
+async def cb_day(callback: CallbackQuery, state: FSMContext):
+    data = await picker_data(callback, state, "name", "year", "month")
+    if data is None:
+        return
+    day, month, year = int(callback.data.split(":")[1]), data["month"], data["year"]
+    if data["calendar_mode"] == "edit":
+        if get_user_birthday(data["edit_b_id"], callback.from_user.id):
+            update_birthday_date_by_id(data["edit_b_id"], stored_date(day, month, year))
+        return await show_card(callback, state, data["edit_b_id"], notice="✅ Дата обновлена")
+    await save_new(callback, state, data["name"], data.get("tg_username"), day, month,
+                   None if year == YEARLESS_YEAR else year)
+
+
+@dp.callback_query(F.data == "picker_cancel")
+async def cb_picker_cancel(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if data.get("calendar_mode") == "edit" and "edit_b_id" in data:
+        return await show_card(callback, state, data["edit_b_id"])
+    await show_home(callback, state)
+
+
+# --- Settings ---
+
+@dp.callback_query(F.data.in_({"settings"} | LEGACY_SETTINGS))
+async def cb_settings(callback: CallbackQuery, state: FSMContext):
+    await show_settings(callback, state)
+
+
+@dp.callback_query(F.data.startswith("time:") | F.data.startswith("time_preset:"))
+async def cb_time(callback: CallbackQuery, state: FSMContext, callback_answer: CallbackAnswer):
+    time_str = normalize_notify_time(callback.data.split(":", 1)[1])
+    if time_str:
+        update_user_settings(callback.from_user.id, notify_time=time_str)
+        callback_answer.text = f"⏰ Напоминаю в {time_str}"
+    await show_settings(callback, state)
+
+
+@dp.callback_query(F.data.startswith("int:") | F.data.startswith("toggle_int:"))
+async def cb_toggle_interval(callback: CallbackQuery, state: FSMContext, callback_answer: CallbackAnswer):
     val = float(callback.data.split(":")[1])
-    if val not in screens.INTERVAL_LABELS:
-        return
-    current = get_user_settings(callback.from_user.id)["intervals"]
-    if val in current:
-        current.remove(val)
-        callback_answer.text = f"🔕 Выключено: {screens.INTERVAL_LABELS[val]}"
-    else:
-        current.append(val)
-        callback_answer.text = f"🔔 Включено: {screens.INTERVAL_LABELS[val]}"
-    update_user_settings(callback.from_user.id, intervals=current)
-    await show(callback, *intervals_screen(callback.from_user.id))
+    if val in screens.INTERVAL_LABELS:
+        current = get_user_settings(callback.from_user.id)["intervals"]
+        if val in current:
+            current.remove(val)
+            callback_answer.text = f"🔕 Выключено: {screens.INTERVAL_LABELS[val]}"
+        else:
+            current.append(val)
+            callback_answer.text = f"🔔 Включено: {screens.INTERVAL_LABELS[val]}"
+        update_user_settings(callback.from_user.id, intervals=current)
+    await show_settings(callback, state)
 
 
-@dp.callback_query(F.data.startswith("preset_int:"))
-async def process_preset_int(callback: CallbackQuery, callback_answer: CallbackAnswer):
+@dp.callback_query(F.data.startswith("ints:") | F.data.startswith("preset_int:"))
+async def cb_interval_preset(callback: CallbackQuery, state: FSMContext, callback_answer: CallbackAnswer):
     preset = callback.data.split(":")[1]
     if preset == "all":
         intervals = list(screens.ALL_INTERVALS)
@@ -430,12 +628,23 @@ async def process_preset_int(callback: CallbackQuery, callback_answer: CallbackA
         callback_answer.text = "🔕 Все напоминания выключены"
     else:
         intervals = list(screens.STANDARD_INTERVALS)
-        callback_answer.text = "⭐ Стандарт: за день, в день рождения и в полночь"
+        callback_answer.text = "⭐ За день, в день рождения и в полночь"
     update_user_settings(callback.from_user.id, intervals=intervals)
-    await show(callback, *intervals_screen(callback.from_user.id))
+    await show_settings(callback, state)
 
 
-# --- BACKUP ---
+@dp.message(AppStates.settings, F.text)
+async def msg_settings_text(message: Message, state: FSMContext):
+    """On the settings screen a typed time sets it; anything else is handled as usual."""
+    time_str = normalize_notify_time(message.text)
+    if time_str:
+        update_user_settings(message.from_user.id, notify_time=time_str)
+        return await show_settings(message, state, notice=f"✅ Напоминаю в **{time_str}**")
+    await state.clear()
+    await handle_free_text(message, state, message.text.strip())
+
+
+# --- Backup ---
 
 def normalize_import_item(item) -> tuple[str, str, str | None] | None:
     """(name, stored date, tag) for a valid backup entry, else None."""
@@ -456,18 +665,8 @@ def normalize_import_item(item) -> tuple[str, str, str | None] | None:
     return name, raw_date, tag
 
 
-@dp.callback_query(F.data == "menu_backup")
-async def backup_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    total = len(get_birthdays_for_user(callback.from_user.id))
-    await show(callback, screens.render_backup(total), kb(
-        [btn("📤 Экспорт", "backup_export"), btn("📥 Импорт", "backup_import")],
-        [btn("🏠 Меню", "menu_start")],
-    ))
-
-
-@dp.callback_query(F.data == "backup_export")
-async def backup_export(callback: CallbackQuery, callback_answer: CallbackAnswer):
+@dp.callback_query(F.data.in_({"export", "backup_export"}))
+async def cb_export(callback: CallbackQuery, callback_answer: CallbackAnswer):
     birthdays = get_birthdays_for_user(callback.from_user.id)
     if not birthdays:
         callback_answer.text = "Список пуст, экспортировать нечего"
@@ -484,27 +683,26 @@ async def backup_export(callback: CallbackQuery, callback_answer: CallbackAnswer
     callback_answer.text = "Файл отправлен"
 
 
-@dp.callback_query(F.data == "backup_import")
-async def backup_import_start(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AppStates.waiting_for_import)
-    await show(callback, screens.render_import_prompt(), cancel_kb("menu_backup"))
+@dp.callback_query(F.data.in_({"import", "backup_import"}))
+async def cb_import(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AppStates.importing)
+    await show(callback, screens.render_import_prompt())
 
 
-@dp.message(AppStates.waiting_for_import, F.document)
-async def process_import(message: Message, state: FSMContext):
+@dp.message(AppStates.importing, F.document)
+async def msg_import(message: Message, state: FSMContext):
+    back = screens.cancel_row("settings")
     if message.document.file_size and message.document.file_size > 1024 * 1024:
-        return await show(message, "❌ Файл больше 1 МБ. Это точно бэкап?", cancel_kb("menu_backup"))
+        return await show(message, screens.screen("❌ Файл больше 1 МБ. Это точно бэкап?", back))
     content = await bot.download(message.document, io.BytesIO())
     try:
         data = json.loads(content.getvalue().decode("utf-8"))
         if not isinstance(data, list):
             raise ValueError
     except (UnicodeDecodeError, ValueError):
-        return await show(
-            message,
-            "❌ Не похоже на файл бэкапа: ожидаю JSON-список записей. Пришлите другой файл.",
-            cancel_kb("menu_backup"),
-        )
+        return await show(message, screens.screen(
+            "❌ Не похоже на файл бэкапа: ожидаю JSON-список записей. Пришлите другой файл.", back
+        ))
 
     user_id = message.from_user.id
     added = updated = skipped = 0
@@ -520,462 +718,38 @@ async def process_import(message: Message, state: FSMContext):
             updated += 1
         add_birthday(user_id, name, b_date, tag)
     await state.clear()
-    await show(message, screens.render_import_result(added, updated, skipped), kb(
-        [btn("📅 Мой список", "menu_list"), btn("🏠 Меню", "menu_start")],
-    ))
-
-
-# --- LIST / CARD / EDIT / DELETE ---
-
-@dp.callback_query(F.data == "menu_upcoming")
-async def menu_upcoming_birthdays(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await show(callback, *list_screen(callback.from_user.id, 0, "date"))
-
-
-@dp.callback_query(F.data.startswith("menu_list"))
-async def menu_list_birthdays(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    sort_by = callback.data.split(":")[1] if ":" in callback.data else "name"
-    await show(callback, *list_screen(callback.from_user.id, 0, sort_by))
-
-
-@dp.callback_query(F.data.startswith("list_page:"))
-async def process_list_page(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    _, page, sort_by = callback.data.split(":")
-    await show(callback, *list_screen(callback.from_user.id, int(page), sort_by))
-
-
-@dp.callback_query(F.data.startswith("view_bday:"))
-async def view_birthday_details(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    b_id, page, sort_by = parse_nav(callback.data)
-    await show_card(callback, b_id, page, sort_by)
-
-
-@dp.callback_query(F.data.startswith("delete_confirm:"))
-async def process_delete_confirm(callback: CallbackQuery):
-    b_id, page, sort_by = parse_nav(callback.data)
-    row = get_user_birthday(b_id, callback.from_user.id)
-    if not row:
-        return await show(callback, *list_screen(callback.from_user.id, page, sort_by))
-    await show(callback, screens.render_delete_confirm(row[2]), kb([
-        btn("🗑 Да, удалить", f"delete_execute:{b_id}:{page}:{sort_by}", style="danger"),
-        btn("Оставить", f"view_bday:{b_id}:{page}:{sort_by}"),
-    ]))
-
-
-@dp.callback_query(F.data.startswith("delete_execute:"))
-async def process_delete_execute(callback: CallbackQuery, callback_answer: CallbackAnswer):
-    b_id, page, sort_by = parse_nav(callback.data)
-    row = get_user_birthday(b_id, callback.from_user.id)
-    if row:
-        delete_birthday_by_id(b_id)
-        callback_answer.text = f"🗑 Удалено: {row[2]}"
-    await show(callback, *list_screen(callback.from_user.id, page, sort_by))
-
-
-@dp.callback_query(F.data.startswith("edit_info:"))
-async def process_edit_info_start(callback: CallbackQuery, state: FSMContext):
-    b_id, page, sort_by = parse_nav(callback.data)
-    row = get_user_birthday(b_id, callback.from_user.id)
-    if not row:
-        return await show(callback, *list_screen(callback.from_user.id, page, sort_by))
-    await state.set_state(AppStates.waiting_for_edit_data)
-    await state.update_data(edit_b_id=b_id, edit_page=page, edit_sort_by=sort_by)
-    await show(
-        callback,
-        screens.render_edit_info_prompt(row[2], row[4]),
-        cancel_kb(f"view_bday:{b_id}:{page}:{sort_by}"),
-    )
-
-
-@dp.message(AppStates.waiting_for_edit_data, F.text)
-async def process_edit_data(message: Message, state: FSMContext):
-    text = message.text.strip()
-    match = TAG_RE.search(text)
-    new_tag = match.group(0) if match else None
-    new_name = " ".join(TAG_RE.sub("", text).split())
-    data = await state.get_data()
-    back = cancel_kb(f"view_bday:{data['edit_b_id']}:{data['edit_page']}:{data['edit_sort_by']}")
-
-    error = name_error(new_name)
-    if error:
-        return await show(message, error, back)
-    if not get_user_birthday(data["edit_b_id"], message.from_user.id):
-        await state.clear()
-        return await show_home(message)
-    try:
-        update_birthday_info_by_id(data["edit_b_id"], new_name, new_tag)
-    except sqlite3.IntegrityError:
-        return await show(
-            message, f"❌ **{screens.md(new_name)}** уже есть в списке. Введите другое имя.", back
-        )
-    await state.clear()
-    await show_card(message, data["edit_b_id"], data["edit_page"], data["edit_sort_by"], notice="✅ Сохранено")
-
-
-@dp.callback_query(F.data.startswith("edit_date:"))
-async def process_edit_date_start(callback: CallbackQuery, state: FSMContext):
-    b_id, page, sort_by = parse_nav(callback.data)
-    row = get_user_birthday(b_id, callback.from_user.id)
-    if not row:
-        return await show(callback, *list_screen(callback.from_user.id, page, sort_by))
-    await state.set_state(AppStates.waiting_for_edit_date)
-    await state.update_data(edit_b_id=b_id, edit_page=page, edit_sort_by=sort_by, name=row[2])
-    await show(callback, screens.render_edit_date_prompt(row[2], row[3]), kb(
-        [btn("📅 Выбрать в календаре", "edit_date_calendar", style="primary")],
-        [btn("❌ Отмена", f"view_bday:{b_id}:{page}:{sort_by}")],
-    ))
-
-
-@dp.message(AppStates.waiting_for_edit_date, F.text)
-async def process_edit_date_text(message: Message, state: FSMContext):
-    data = await state.get_data()
-    date_tuple = parse_date_input(message.text.strip())
-    error = date_error(date_tuple)
-    if error:
-        return await show(message, error, kb(
-            [btn("📅 Выбрать в календаре", "edit_date_calendar")],
-            [btn("❌ Отмена", f"view_bday:{data['edit_b_id']}:{data['edit_page']}:{data['edit_sort_by']}")],
-        ))
-    day, month, year = date_tuple
-    if get_user_birthday(data["edit_b_id"], message.from_user.id):
-        update_birthday_date_by_id(data["edit_b_id"], f"{day:02d}.{month:02d}.{year or YEARLESS_YEAR}")
-    await state.clear()
-    await show_card(message, data["edit_b_id"], data["edit_page"], data["edit_sort_by"], notice="✅ Дата обновлена")
-
-
-@dp.callback_query(F.data == "edit_date_calendar")
-async def process_edit_date_calendar(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(calendar_mode="edit")
-    await show_decade_picker(callback, state)
-
-
-# --- ADD BIRTHDAY FLOW ---
-
-def add_menu_kb():
-    return kb(
-        [btn("📝 Ввести вручную", "add_manual_name", style="primary")],
-        [btn("👤 Из контактов Telegram", "add_choose_contact")],
-        [btn("🏠 Меню", "menu_start")],
-    )
-
-
-def get_decade_keyboard():
-    rows = []
-    start = (datetime.datetime.now().year // 10) * 10
-    for d in range(start, start - 80, -20):
-        rows.append([btn(f"{i}-е", f"set_decade:{i}") for i in range(d, d - 20, -10)])
-    rows.append([btn("🤷 Год не знаю", "skip_year")])
-    rows.append([btn("❌ Отмена", "picker_cancel")])
-    return kb(*rows)
-
-
-def get_year_in_decade_keyboard(decade):
-    this_year = datetime.date.today().year
-    years = [btn(str(y), f"set_year:{y}") for y in range(decade + 9, decade - 1, -1) if y <= this_year]
-    return kb(*[years[i:i + 5] for i in range(0, len(years), 5)], [btn("🔙 Назад", "back_to_decade")])
-
-
-def get_month_keyboard(is_yearless=False):
-    rows = [[btn(MONTHS_SHORT[m], f"set_month:{m + 1}") for m in range(i, i + 3)] for i in range(0, 12, 3)]
-    rows.append([btn("🔙 Назад", "back_to_decade" if is_yearless else "back_to_year")])
-    return kb(*rows)
-
-
-def get_day_keyboard(year, month):
-    rows = [[label(d) for d in ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]]]
-    for week in calendar.monthcalendar(year, month):
-        rows.append([btn(str(day), f"set_day:{day}") if day else label(" ") for day in week])
-    rows.append([btn("🔙 Назад", "back_to_month")])
-    return kb(*rows)
-
-
-async def show_decade_picker(target, state: FSMContext):
-    await state.set_state(AppStates.waiting_for_decade)
-    data = await state.get_data()
-    await show(target, screens.render_picker(data.get("name"), "Выберите десятилетие рождения"), get_decade_keyboard())
-
-
-async def ask_date(target, state: FSMContext, name: str, tag: str | None):
-    """Name is known: ask for the date as text or via the calendar."""
-    await state.set_state(AppStates.waiting_for_contact_date)
-    await state.update_data(name=name, tg_username=tag, calendar_mode="add")
-    await show(target, screens.render_contact_date_prompt(name, tag), kb(
-        [btn("📅 Выбрать в календаре", "add_contact_calendar", style="primary")],
-        [btn("❌ Отмена", "menu_start")],
-    ))
-
-
-async def ask_confirm(target, state: FSMContext, name, tag, day, month, year):
-    exists = find_birthday_id(target.from_user.id, name) is not None
-    await state.set_state(AppStates.waiting_for_confirm_add)
-    await state.update_data(
-        name=name, tg_username=tag, day=day, month=month,
-        year=year if year is not None else YEARLESS_YEAR, calendar_mode="add",
-    )
-    await show(
-        target,
-        screens.render_confirm_add(name, tag, day, month, year, now_today(), exists),
-        kb(
-            [btn("✅ Сохранить", "confirm_add_yes", style="success"),
-             btn("📅 Другая дата", "confirm_add_manual")],
-            [btn("❌ Отмена", "menu_start")],
-        ),
-    )
-
-
-async def save_and_show(target, state: FSMContext, name, tag, day, month, year):
-    existed = find_birthday_id(target.from_user.id, name) is not None
-    b_id = add_birthday(target.from_user.id, name, f"{day:02d}.{month:02d}.{year}", tag)
-    await state.clear()
-    notice = "✅ Запись обновлена" if existed else "✅ Добавлено в список"
-    await show_card(target, b_id, notice=notice, after_add=True)
-
-
-@dp.callback_query(F.data == "menu_add")
-async def menu_add_options(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await show(callback, screens.render_add_menu(), add_menu_kb())
-
-
-@dp.callback_query(F.data == "add_manual_name")
-async def add_manual_name_start(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AppStates.waiting_for_name)
-    await show(callback, screens.render_name_prompt(), cancel_kb())
-
-
-@dp.callback_query(F.data == "add_choose_contact")
-async def add_choose_contact_start(callback: CallbackQuery):
-    request = KeyboardButtonRequestUsers(
-        request_id=1, max_quantity=1, user_is_bot=False, request_name=True, request_username=True,
-    )
-    markup = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="👤 Выбрать человека", request_users=request)],
-                  [KeyboardButton(text=CANCEL_TEXT)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-    await callback.message.answer_rich(
-        InputRichMessage(markdown=(
-            "## 👤 Выбор из Telegram\n\n"
-            "Нажмите **👤 Выбрать человека** внизу и выберите чат. "
-            "Имя и @тег я подставлю сам, останется только дата."
-        )),
-        reply_markup=markup,
-    )
-
-
-@dp.message(F.users_shared)
-async def process_shared_user(message: Message, state: FSMContext):
-    shared = message.users_shared.users[0]
-    name = " ".join(filter(None, [shared.first_name, shared.last_name]))
-    tag = f"@{shared.username}" if shared.username else None
-    await message.answer_rich(
-        InputRichMessage(markdown=f"👤 Выбран: **{screens.md(name or 'без имени')}**"),
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    if name_error(name):
-        await state.set_state(AppStates.waiting_for_name)
-        await state.update_data(tg_username=tag)
-        return await show(message, screens.render_name_prompt(prefilled_tag=tag), cancel_kb())
-    await ask_date(message, state, name, tag)
-
-
-@dp.message(F.contact)
-async def process_contact(message: Message, state: FSMContext):
-    name = " ".join(filter(None, [message.contact.first_name, message.contact.last_name]))
-    await message.answer_rich(
-        InputRichMessage(markdown="👤 Контакт получен."), reply_markup=ReplyKeyboardRemove()
-    )
-    if name_error(name):
-        await state.set_state(AppStates.waiting_for_name)
-        return await show(message, screens.render_name_prompt(), cancel_kb())
-    await ask_date(message, state, name, None)
-
-
-@dp.callback_query(F.data == "add_contact_calendar")
-async def process_add_contact_calendar(callback: CallbackQuery, state: FSMContext):
-    await show_decade_picker(callback, state)
-
-
-@dp.message(AppStates.waiting_for_contact_date, F.text)
-async def process_contact_date_text(message: Message, state: FSMContext):
-    data = await state.get_data()
-    date_tuple = parse_date_input(message.text.strip())
-    error = date_error(date_tuple)
-    if error:
-        return await show(message, error, kb(
-            [btn("📅 Выбрать в календаре", "add_contact_calendar")], [btn("❌ Отмена", "menu_start")],
-        ))
-    day, month, year = date_tuple
-    await save_and_show(message, state, data["name"], data.get("tg_username"), day, month, year or YEARLESS_YEAR)
-
-
-@dp.message(AppStates.waiting_for_name, F.text)
-async def process_name(message: Message, state: FSMContext):
-    name, username, date_tuple = extract_name_and_date(message.text.strip())
-    error = name_error(name)
-    if error:
-        return await show(message, error, cancel_kb())
-    username = username or (await state.get_data()).get("tg_username")
-    if date_tuple:
-        error = date_error(date_tuple)
-        if error:
-            return await show(message, error, cancel_kb())
-        return await ask_confirm(message, state, name, username, *date_tuple)
-    await state.update_data(name=name, tg_username=username, calendar_mode="add")
-    await show_decade_picker(message, state)
-
-
-@dp.callback_query(F.data == "confirm_add_yes")
-async def process_confirm_add_yes(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    if not {"name", "day", "month", "year"} <= data.keys():
-        return await show_home(callback, notice="⌛ Этот шаг устарел, начните заново.")
-    await save_and_show(callback, state, data["name"], data.get("tg_username"), data["day"], data["month"], data["year"])
-
-
-@dp.callback_query(F.data == "confirm_add_manual")
-async def process_confirm_add_manual(callback: CallbackQuery, state: FSMContext):
-    await show_decade_picker(callback, state)
-
-
-@dp.callback_query(F.data == "picker_cancel")
-async def process_picker_cancel(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    await state.clear()
-    if data.get("calendar_mode") == "edit" and "edit_b_id" in data:
-        return await show_card(callback, data["edit_b_id"], data.get("edit_page", 0), data.get("edit_sort_by", "name"))
-    await show_home(callback)
-
-
-@dp.callback_query(F.data == "skip_year")
-async def process_skip_year(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(year=YEARLESS_YEAR)
-    data = await state.get_data()
-    await show(
-        callback,
-        screens.render_picker(data.get("name"), "Выберите месяц", year=YEARLESS_YEAR),
-        get_month_keyboard(is_yearless=True),
-    )
-
-
-@dp.callback_query(F.data.startswith("set_decade:"))
-async def process_decade(callback: CallbackQuery, state: FSMContext):
-    decade = int(callback.data.split(":")[1])
-    await state.update_data(decade=decade)
-    data = await state.get_data()
-    await show(callback, screens.render_picker(data.get("name"), "Выберите год"), get_year_in_decade_keyboard(decade))
-
-
-@dp.callback_query(F.data.startswith("set_year:"))
-async def process_year(callback: CallbackQuery, state: FSMContext):
-    year = int(callback.data.split(":")[1])
-    await state.update_data(year=year)
-    data = await state.get_data()
-    await show(callback, screens.render_picker(data.get("name"), "Выберите месяц", year=year), get_month_keyboard())
-
-
-@dp.callback_query(F.data.startswith("set_month:"))
-async def process_month(callback: CallbackQuery, state: FSMContext):
-    month = int(callback.data.split(":")[1])
-    data = await state.get_data()
-    if "year" not in data:
-        return await show_home(callback, notice="⌛ Этот шаг устарел, начните заново.")
-    await state.update_data(month=month)
-    await show(
-        callback,
-        screens.render_picker(data.get("name"), "Выберите день", year=data["year"], month=month),
-        get_day_keyboard(data["year"], month),
-    )
-
-
-@dp.callback_query(F.data.startswith("set_day:"))
-async def process_day(callback: CallbackQuery, state: FSMContext):
-    day = int(callback.data.split(":")[1])
-    data = await state.get_data()
-    if not {"year", "month"} <= data.keys():
-        return await show_home(callback, notice="⌛ Этот шаг устарел, начните заново.")
-    year, month = data["year"], data["month"]
-
-    if data.get("calendar_mode") == "edit":
-        await state.clear()
-        if get_user_birthday(data["edit_b_id"], callback.from_user.id):
-            update_birthday_date_by_id(data["edit_b_id"], f"{day:02d}.{month:02d}.{year}")
-        return await show_card(
-            callback, data["edit_b_id"], data["edit_page"], data["edit_sort_by"], notice="✅ Дата обновлена"
-        )
-    if "name" not in data:
-        return await show_home(callback, notice="⌛ Этот шаг устарел, начните заново.")
-    await save_and_show(callback, state, data["name"], data.get("tg_username"), day, month, year)
-
-
-@dp.callback_query(F.data == "back_to_decade")
-async def back_to_decade_handler(callback: CallbackQuery, state: FSMContext):
-    await show_decade_picker(callback, state)
-
-
-@dp.callback_query(F.data == "back_to_year")
-async def back_to_year_handler(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    if not data.get("decade"):
-        return await show_decade_picker(callback, state)
-    await show(
-        callback,
-        screens.render_picker(data.get("name"), "Выберите год"),
-        get_year_in_decade_keyboard(data["decade"]),
-    )
-
-
-@dp.callback_query(F.data == "back_to_month")
-async def back_to_month_handler(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    year = data.get("year")
-    await show(
-        callback,
-        screens.render_picker(data.get("name"), "Выберите месяц", year=year),
-        get_month_keyboard(is_yearless=year == YEARLESS_YEAR),
-    )
-
-
-@dp.callback_query(F.data == "ignore")
-async def ignore_callback(callback: CallbackQuery):
-    """Inert buttons on screens sent before the switch to disabled buttons."""
+    await show(message, screens.render_import_result(added, updated, skipped))
 
 
 # --- Fallbacks (registered last) ---
 
-@dp.message(StateFilter(None), F.text, ~F.text.startswith("/"))
-async def quick_add(message: Message, state: FSMContext):
-    """Free text outside any flow: try to read it as "Name @tag date"."""
-    name, username, date_tuple = extract_name_and_date(message.text.strip())
-    if name and not name_error(name) and date_tuple and not date_error(date_tuple):
-        return await ask_confirm(message, state, name, username, *date_tuple)
-    await show(
-        message,
-        "🤔 Не совсем понял. Чтобы добавить день рождения, напишите `Имя дата`, "
-        "например `Маша 3 августа`, или выберите действие в меню.",
-        main_menu(),
-    )
+@dp.message(F.text.startswith("/"))
+async def msg_unknown_command(message: Message):
+    await show(message, screens.screen("Такой команды я не знаю.", screens.home_row()))
 
 
-@dp.message(StateFilter(None))
-async def unknown_message(message: Message):
-    if message.text:
-        text = "Такой команды я не знаю. Вот что я умею:"
-    else:
-        text = "Я понимаю текст и кнопки. Вот что я умею:"
-    await show(message, text, main_menu())
+@dp.message(F.text, ~StateFilter(AppStates.importing))
+async def msg_free_text(message: Message, state: FSMContext):
+    """No flow is waiting for this text (or the flow's buttons were left behind)."""
+    await state.clear()
+    await handle_free_text(message, state, message.text.strip())
+
+
+@dp.callback_query()
+async def cb_unknown(callback: CallbackQuery, state: FSMContext):
+    """Buttons from screens of older versions that no longer exist."""
+    await show_home(callback, state, notice=STALE)
 
 
 @dp.message()
-async def unexpected_in_state(message: Message, state: FSMContext):
-    current = await state.get_state()
-    hint = "файл .json" if current == AppStates.waiting_for_import.state else "текстовое сообщение"
-    await show(message, f"Сейчас я жду {hint}. Чтобы выйти, нажмите /cancel.", cancel_kb())
+async def msg_unexpected(message: Message, state: FSMContext):
+    if await state.get_state() == AppStates.importing.state:
+        text = "Жду JSON-файл бэкапа. Чтобы выйти, нажмите /cancel."
+        return await show(message, screens.screen(text, screens.cancel_row("settings")))
+    await show(message, screens.screen(
+        "Я понимаю текст и кнопки. Напишите `Имя дата`, чтобы добавить человека.",
+        screens.home_row(),
+    ))
 
 
 async def main():
