@@ -2,25 +2,29 @@
 
 from __future__ import annotations
 
-import html
 from datetime import datetime, time
 
 from bot.dates import (
+    YEARLESS_YEAR,
     age_turning,
     days_until,
     minutes_until,
     next_birthday_datetime,
     parse_birth_date,
 )
+from bot.screens import md, years_word
 
 
 def display_name(name: str, tg_username: str | None) -> str:
-    safe_name = html.escape(name)
-    label = f"<b>{safe_name}</b>"
+    label = f"**{md(name)}**"
     if tg_username:
-        safe_tag = html.escape(tg_username)
-        label += f" ({safe_tag})"
+        label += f" ({md(tg_username)})"
     return label
+
+
+def _message(title: str, label: str, details: str = "") -> str:
+    body = f"У {label} день рождения{details}."
+    return f"### {title}\n\n{body}"
 
 
 def build_birthday_notification(
@@ -32,39 +36,45 @@ def build_birthday_notification(
     notify_time: time,
     intervals: list[float],
 ) -> str | None:
+    """Rich Markdown text of the notification due right now, or None."""
     bday_dt = parse_birth_date(bday_str)
     target_date = next_birthday_datetime(bday_dt, now)
-    is_yearless = bday_dt.year == 1004
+    is_yearless = bday_dt.year == YEARLESS_YEAR
     age = age_turning(bday_dt, target_date) if not is_yearless else None
     label = display_name(name, tg_username)
 
     diff_minutes = minutes_until(target_date, now)
     diff_days = days_until(target_date, now)
 
-    age_suffix = f" (исполнится {age})" if age is not None else ""
-    today_suffix = f" сегодня исполняется {age}! 🥳" if age is not None else " сегодня день рождения! 🥳"
+    turns = f": исполнится {years_word(age)}" if age is not None else ""
+    turns_today = f": исполняется {years_word(age)}" if age is not None else ""
+    on_date = f" ({target_date:%d.%m})"
 
     if diff_minutes == 30 and 0.5 in intervals:
-        return f"⏳ <b>Через 30 минут</b> день рождения у {label}!{age_suffix}"
+        return _message("⏳ Через 30 минут", label, turns)
     if diff_minutes == 5 and 0.08 in intervals:
-        return f"🔥 <b>Через 5 минут</b> день рождения у {label}!"
+        return _message("🔥 Через 5 минут", label, turns)
     if diff_minutes == 0 and -1.0 in intervals:
-        return f"🌙 <b>С днем рождения!</b> Сегодня у {label}{today_suffix}"
+        return _message("🌙 С днем рождения!", label, f" сегодня{turns_today}") + (
+            "\n\n> 🎉 Самое время поздравить первым!"
+        )
 
     if now.time() != notify_time:
         return None
 
     if diff_days == 0 and 0.0 in intervals:
-        today_msg = f" сегодня день рождения у {label}!{age_suffix} 🎉" if age is not None else f" сегодня день рождения у {label}! 🎉"
-        return f"☀️ <b>Напоминание:</b>{today_msg}"
+        return _message("☀️ Сегодня праздник", label, f" сегодня{turns_today}") + (
+            "\n\n> 🎁 Не забудьте поздравить!"
+        )
     if diff_days == 1 and 1.0 in intervals:
-        return f"🔔 <b>Завтра</b> день рождения у {label}!"
+        return _message("🔔 Завтра", label, f" завтра{on_date}{turns}")
     if diff_days == 3 and 3.0 in intervals:
-        return f"🔔 <b>Через 3 дня</b> день рождения у {label}!"
+        return _message("🔔 Через 3 дня", label, f"{on_date}{turns}")
     if diff_days == 7 and 7.0 in intervals:
-        return f"🔔 <b>Через неделю</b> день рождения у {label}!"
+        return _message("🔔 Через неделю", label, f"{on_date}{turns}")
     if diff_days == 30 and 30.0 in intervals:
-        date_display = bday_dt.strftime("%d.%m") if is_yearless else bday_str
-        return f"📅 <b>Через месяц</b> ({date_display}) день рождения у {label}!"
+        return _message("📅 Через месяц", label, f"{on_date}{turns}") + (
+            "\n\n> 💡 Есть время спокойно выбрать подарок."
+        )
 
     return None

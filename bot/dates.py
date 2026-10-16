@@ -8,6 +8,8 @@ from datetime import datetime
 BIRTH_DATE_FMT = "%d.%m.%Y"
 DEFAULT_INTERVALS = [30.0, 7.0, 3.0, 1.0, 0.0, -1.0, 0.5, 0.08]
 DEFAULT_NOTIFY_TIME = "09:00"
+# Placeholder year for birthdays stored without a year (leap, so 29.02 stays valid).
+YEARLESS_YEAR = 1004
 NOTIFY_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
@@ -25,6 +27,18 @@ def format_intervals(intervals: list[float]) -> str:
 
 def is_valid_notify_time(value: str) -> bool:
     return bool(NOTIFY_TIME_RE.match(value))
+
+
+def normalize_notify_time(value: str) -> str | None:
+    """Accept 9:00, 09.30, 0930 and similar; return HH:MM or None."""
+    value = value.strip().replace(".", ":").replace("-", ":")
+    if re.fullmatch(r"\d{3,4}", value):
+        value = f"{value[:-2]}:{value[-2:]}"
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
+    if not match:
+        return None
+    result = f"{int(match.group(1)):02d}:{match.group(2)}"
+    return result if is_valid_notify_time(result) else None
 
 
 def next_birthday_datetime(bday_dt: datetime, now: datetime) -> datetime:

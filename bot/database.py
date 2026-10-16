@@ -86,7 +86,7 @@ def get_user_settings(user_id: int) -> dict:
 def update_user_settings(user_id, notify_time=None, intervals=None):
     current = get_user_settings(user_id)
     time = notify_time if notify_time else current["notify_time"]
-    ints = format_intervals(intervals) if intervals else format_intervals(current["intervals"])
+    ints = format_intervals(intervals if intervals is not None else current["intervals"])
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -103,7 +103,7 @@ def update_user_settings(user_id, notify_time=None, intervals=None):
         conn.commit()
 
 
-def add_birthday(user_id, name, birth_date, tg_username=None):
+def add_birthday(user_id, name, birth_date, tg_username=None) -> int:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -114,6 +114,18 @@ def add_birthday(user_id, name, birth_date, tg_username=None):
             (user_id, name, birth_date, tg_username),
         )
         conn.commit()
+        return cursor.lastrowid
+
+
+def find_birthday_id(user_id, name):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id FROM birthdays WHERE user_id = ? AND name = ?",
+            (user_id, name),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
 
 
 def get_all_birthdays():
@@ -176,6 +188,12 @@ def get_birthday_by_id(b_id):
             (b_id,),
         )
         return cursor.fetchone()
+
+
+def get_user_birthday(b_id, user_id):
+    """Row by id, only if it belongs to user_id (callback data can be forged)."""
+    row = get_birthday_by_id(b_id)
+    return row if row and row[1] == user_id else None
 
 
 def delete_birthday_by_id(b_id):

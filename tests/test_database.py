@@ -94,3 +94,17 @@ def test_id_operations(temp_db):
     delete_birthday_by_id(b_id)
     assert get_birthday_by_id(b_id) is None
 
+
+
+def test_empty_intervals_are_saved(temp_db):
+    update_user_settings(7, intervals=[])
+    assert get_user_settings(7)["intervals"] == []
+
+
+def test_user_birthday_checks_owner(temp_db):
+    from bot.database import find_birthday_id, get_user_birthday
+
+    b_id = add_birthday(1, "Carol", "03.03.1993", None)
+    assert find_birthday_id(1, "Carol") == b_id
+    assert get_user_birthday(b_id, 1)[2] == "Carol"
+    assert get_user_birthday(b_id, 2) is None

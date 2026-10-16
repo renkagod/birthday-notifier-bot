@@ -1,8 +1,22 @@
 import logging
 from datetime import datetime
 
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
+
 from bot.database import get_user_settings, iter_all_birthdays
 from bot.notifications import build_birthday_notification
+
+
+def congratulate_keyboard(tg_username: str | None) -> InlineKeyboardMarkup | None:
+    if not tg_username:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="💬 Написать",
+            url=f"https://t.me/{tg_username.lstrip('@')}",
+            style="success",
+        )
+    ]])
 
 
 async def check_birthdays(bot):
@@ -27,7 +41,11 @@ async def check_birthdays(bot):
             )
 
             if msg:
-                await bot.send_message(user_id, msg)
+                await bot.send_rich_message(
+                    user_id,
+                    InputRichMessage(markdown=msg),
+                    reply_markup=congratulate_keyboard(tg_username),
+                )
                 logging.info("Notification sent to %s for %s", user_id, name)
 
         except Exception as e:

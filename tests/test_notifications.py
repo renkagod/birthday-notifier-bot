@@ -4,11 +4,25 @@ from bot.notifications import build_birthday_notification, display_name
 
 
 def test_display_name_with_tag():
-    assert display_name("Anna", "@anna") == "<b>Anna</b> (@anna)"
+    assert display_name("Anna", "@anna") == "**Anna** (@anna)"
 
 
-def test_display_name_escapes_html():
-    assert display_name("<Bob> & Alice", "@bob&alice") == "<b>&lt;Bob&gt; &amp; Alice</b> (@bob&amp;alice)"
+def test_display_name_escapes_markdown():
+    assert display_name("<Bob> *&* Alice", "@bob_a") == r"**\<Bob\> \*\&\* Alice** (@bob\_a)"
+
+
+def test_notification_mentions_age():
+    msg = build_birthday_notification(
+        name="Anna",
+        bday_str="20.06.1990",
+        tg_username=None,
+        now=datetime(2026, 6, 13, 9, 0),
+        notify_time=time(9, 0),
+        intervals=[7.0],
+    )
+    assert msg is not None
+    assert msg.startswith("### 🔔 Через неделю")
+    assert "36 лет" in msg
 
 
 
