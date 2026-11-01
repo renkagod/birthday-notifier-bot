@@ -41,7 +41,20 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id INTEGER PRIMARY KEY,
                 notify_time TEXT DEFAULT '09:00',
-                intervals TEXT DEFAULT '30,7,3,1,0,-1,0.5,0.08'
+                intervals TEXT DEFAULT '7,1,0'
+            )
+            """
+        )
+        # Bot messages that can be edited by replying to them: kind "person" (ref = birthday
+        # id) or "settings".
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS message_refs (
+                user_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                ref INTEGER,
+                PRIMARY KEY (user_id, message_id)
             )
             """
         )
@@ -157,6 +170,56 @@ def iter_all_birthdays(batch_size=1000):
                 yield from rows
         finally:
             cursor.close()
+
+
+def iter_user_birthdays(batch_size=1000):
+    """(user_id, id, name, birth_date, tg_username), grouped by user."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT user_id, id, name, birth_date, tg_username FROM birthdays ORDER BY user_id"
+            )
+            while True:
+                rows = cursor.fetchmany(batch_size)
+                if not rows:
+                    break
+                yield from rows
+        finally:
+            cursor.close()
+
+
+MESSAGE_REFS_PER_USER = 300
+
+
+def remember_message(user_id, message_id, kind, ref=None):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO message_refs (user_id, message_id, kind, ref) VALUES (?, ?, ?, ?)",
+            (user_id, message_id, kind, ref),
+        )
+        cursor.execute(
+            """
+            DELETE FROM message_refs WHERE user_id = ? AND message_id NOT IN (
+                SELECT message_id FROM message_refs WHERE user_id = ?
+                ORDER BY message_id DESC LIMIT ?
+            )
+            """,
+            (user_id, user_id, MESSAGE_REFS_PER_USER),
+        )
+        conn.commit()
+
+
+def find_message(user_id, message_id):
+    """(kind, ref) of a remembered bot message, or None."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT kind, ref FROM message_refs WHERE user_id = ? AND message_id = ?",
+            (user_id, message_id),
+        )
+        return cursor.fetchone()
 
 
 def delete_birthday(user_id, name):

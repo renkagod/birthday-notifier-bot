@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 
 BIRTH_DATE_FMT = "%d.%m.%Y"
-DEFAULT_INTERVALS = [30.0, 7.0, 3.0, 1.0, 0.0, -1.0, 0.5, 0.08]
+DEFAULT_INTERVALS = [7.0, 1.0, 0.0]
 DEFAULT_NOTIFY_TIME = "09:00"
 # Placeholder year for birthdays stored without a year (leap, so 29.02 stays valid).
 YEARLESS_YEAR = 1004

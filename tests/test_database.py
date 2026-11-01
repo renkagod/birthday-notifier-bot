@@ -37,7 +37,7 @@ def test_duplicate_name_replaces(temp_db):
 def test_user_settings_defaults(temp_db):
     settings = get_user_settings(99)
     assert settings["notify_time"] == "09:00"
-    assert 30.0 in settings["intervals"]
+    assert settings["intervals"] == [7.0, 1.0, 0.0]
 
 
 def test_user_settings_update(temp_db):
@@ -108,3 +108,13 @@ def test_user_birthday_checks_owner(temp_db):
     assert find_birthday_id(1, "Carol") == b_id
     assert get_user_birthday(b_id, 1)[2] == "Carol"
     assert get_user_birthday(b_id, 2) is None
+
+
+def test_message_refs_for_replies(temp_db):
+    from bot.database import find_message, remember_message
+
+    remember_message(5, 100, "person", 7)
+    remember_message(5, 101, "settings")
+    assert find_message(5, 100) == ("person", 7)
+    assert find_message(5, 101) == ("settings", None)
+    assert find_message(6, 100) is None
