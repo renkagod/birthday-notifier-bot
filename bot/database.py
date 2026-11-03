@@ -59,10 +59,11 @@ def init_db() -> None:
             """
         )
 
-        try:
-            cursor.execute("ALTER TABLE birthdays ADD COLUMN tg_username TEXT")
-        except sqlite3.OperationalError:
-            pass
+        for column in ("tg_username", "note"):
+            try:
+                cursor.execute(f"ALTER TABLE birthdays ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError:
+                pass
 
         cursor.execute(
             """
@@ -116,18 +117,24 @@ def update_user_settings(user_id, notify_time=None, intervals=None):
         conn.commit()
 
 
-def add_birthday(user_id, name, birth_date, tg_username=None) -> int:
+def add_birthday(user_id, name, birth_date, tg_username=None, note=None) -> int:
+    """Add a person or update the one with the same name, keeping its id and note."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT OR REPLACE INTO birthdays (user_id, name, birth_date, tg_username)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO birthdays (user_id, name, birth_date, tg_username, note)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, name) DO UPDATE SET
+                birth_date = excluded.birth_date,
+                tg_username = excluded.tg_username,
+                note = COALESCE(excluded.note, birthdays.note)
             """,
-            (user_id, name, birth_date, tg_username),
+            (user_id, name, birth_date, tg_username, note),
         )
         conn.commit()
-        return cursor.lastrowid
+        cursor.execute("SELECT id FROM birthdays WHERE user_id = ? AND name = ?", (user_id, name))
+        return cursor.fetchone()[0]
 
 
 def find_birthday_id(user_id, name):
@@ -173,12 +180,12 @@ def iter_all_birthdays(batch_size=1000):
 
 
 def iter_user_birthdays(batch_size=1000):
-    """(user_id, id, name, birth_date, tg_username), grouped by user."""
+    """(user_id, id, name, birth_date, tg_username, note), grouped by user."""
     with get_connection() as conn:
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "SELECT user_id, id, name, birth_date, tg_username FROM birthdays ORDER BY user_id"
+                "SELECT user_id, id, name, birth_date, tg_username, note FROM birthdays ORDER BY user_id"
             )
             while True:
                 rows = cursor.fetchmany(batch_size)
@@ -277,6 +284,30 @@ def update_birthday_info_by_id(b_id, name, tg_username):
             """,
             (name, tg_username, b_id),
         )
+        conn.commit()
+
+
+def get_note(b_id):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT note FROM birthdays WHERE id = ?", (b_id,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+
+def get_notes_for_user(user_id) -> dict[int, str]:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, note FROM birthdays WHERE user_id = ? AND note IS NOT NULL", (user_id,)
+        )
+        return dict(cursor.fetchall())
+
+
+def set_note(b_id, note):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE birthdays SET note = ? WHERE id = ?", (note or None, b_id))
         conn.commit()
 
 

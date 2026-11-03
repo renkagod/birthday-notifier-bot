@@ -59,6 +59,13 @@ def test_name_is_escaped():
     assert r"\<Bob\> \*\&\*" in msg
 
 
+def test_note_comes_with_reminder():
+    note = "Книга про горы\n" + "x" * 300
+    msg = digest([(1, "Anna", "20.06.1990", None, note)], datetime(2026, 6, 13, 9, 0), [7.0])
+    assert "\n\n> Книга про горы x" in msg
+    assert msg.count("x") < 200 and "…" in msg
+
+
 def test_long_digest_is_cut():
     people = [(i, f"P{i}", "13.06.1990", None) for i in range(50)]
     msg = digest(people, datetime(2026, 6, 13, 9, 0), [0.0])

@@ -100,6 +100,23 @@ def test_person_yearless_has_no_age_and_explains_reply():
     assert 'data="del:7"' in text
 
 
+def test_person_shows_note_as_quote():
+    text = screens.render_person(7, "Маша", "03.08.1004", None, NOW, note="Книга *про* горы\n\n- носки")
+    assert "> Книга \\*про\\* горы\n>\n> - носки" in text
+    assert 'data="note:7">Изменить заметку' in text
+
+
+def test_person_without_note_offers_one():
+    text = screens.render_person(7, "Маша", "03.08.1004", None, NOW)
+    assert 'data="note:7">Добавить заметку' in text
+    assert "\n> " not in text
+
+
+def test_note_prompt_can_delete_existing():
+    assert 'data="note_del:7"' in screens.render_note_prompt(7, "Маша", "идея")
+    assert "note_del" not in screens.render_note_prompt(7, "Маша", None)
+
+
 def test_added_person_can_be_undone():
     text = screens.render_added(7, "Маша", "03.08.1004", "@masha", NOW)
     assert 'data="undo:7"' in text

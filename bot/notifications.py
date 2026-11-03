@@ -19,6 +19,7 @@ from bot.screens import (
     is_day_interval,
     link,
     links,
+    note_preview,
     tag_url,
     turns,
     when_phrase,
@@ -50,18 +51,19 @@ def build_digest(
     notify_time: time,
     intervals: list[float],
 ) -> str | None:
-    """Rich Markdown reminder due right now for one user's (id, name, date, tag) rows, or None."""
+    """Rich Markdown reminder due right now for one user's (id, name, date, tag[, note]) rows, or None."""
     day_values = {int(v) for v in intervals if is_day_interval(v)}
     at_notify_time = now.time().replace(second=0, microsecond=0) == notify_time
 
     night: list[str] = []
     today: list[str] = []
     ahead: list[tuple[int, str]] = []
-    for b_id, name, date_str, tag in people:
+    for b_id, name, date_str, tag, *rest in people:
         facts = birthday_facts(date_str, now)
         if not facts:
             continue
         target, days, age = facts
+        note = f"\n\n{note_preview(rest[0])}" if rest and rest[0] else ""
         minutes = minutes_until(target, now)
         for before, value, lead in NIGHT:
             if value in intervals and minutes == before:
@@ -71,11 +73,11 @@ def build_digest(
         if not at_notify_time or days not in day_values:
             continue
         if days == 0:
-            today.append(f"Сегодня день рождения — {_person(b_id, name)}{turns(age, 0)}.{_greet(tag)}")
+            today.append(f"Сегодня день рождения — {_person(b_id, name)}{turns(age, 0)}.{_greet(tag)}{note}")
         else:
             when = capitalize(when_phrase(days))
             date = "" if days == 1 else f", {day_month(target)}"
-            ahead.append((days, f"**{when}**{date} — {link(name, f'view:{b_id}')}{turns(age, days)}"))
+            ahead.append((days, f"**{when}**{date} — {link(name, f'view:{b_id}')}{turns(age, days)}{note}"))
 
     if not (night or today or ahead):
         return None

@@ -49,6 +49,8 @@ ALL_INTERVALS = DAY_INTERVALS + NIGHT_INTERVALS
 MAX_REMIND_DAYS = 365
 
 MAX_NAME_LENGTH = 64
+MAX_NOTE_LENGTH = 1000
+NOTE_PREVIEW_LENGTH = 160
 BRIEF_LINES = 8
 BRIEF_HORIZON = 31
 LIST_PAGE_SIZE = 40
@@ -260,6 +262,20 @@ def _notice(lines: list[str], notice: str | None) -> None:
         lines += [f"> {notice}", ""]
 
 
+def note_quote(note: str) -> str:
+    """The note as a quote, each line of it a paragraph."""
+    lines = [md(line) for line in note.splitlines() if line.strip()]
+    return "\n>\n".join(f"> {line}" for line in lines)
+
+
+def note_preview(note: str) -> str:
+    """The note on one line, cut to fit under a person in the digest."""
+    flat = " ".join(note.split())
+    if len(flat) > NOTE_PREVIEW_LENGTH:
+        flat = flat[:NOTE_PREVIEW_LENGTH - 1].rstrip() + "…"
+    return f"> {md(flat)}"
+
+
 def today_line(b_id: int, name: str, tag: str | None, age: int | None) -> str:
     greet = f" {inline_url('Написать', tag_url(tag))}" if tag else ""
     return f"Сегодня день рождения — **{link(name, f'view:{b_id}')}**{turns(age, 0)}.{greet}"
@@ -333,6 +349,10 @@ def render_help() -> str:
         "",
         "**Исправить.** Ответьте на сообщение с человеком: датой `13.11.1988`, "
         "новым именем `Дмитрий` или тегом `@dima`. Чтобы убрать тег, ответьте `без тега`.",
+        "",
+        "**Заметки.** Идею подарка или что угодно ещё запишите кнопкой «Добавить заметку» "
+        "в карточке или ответом на неё: `заметка: книга про горы`. Заметка придёт вместе "
+        "с напоминанием.",
         "",
         "**Напоминания.** Утром в выбранное время приходит одна сводка: кому сегодня, "
         "завтра, через неделю. Время и дни настраиваются в «Напоминаниях».",
@@ -415,6 +435,7 @@ def render_person(
     tag: str | None,
     now: datetime,
     *,
+    note: str | None = None,
     notice: str | None = None,
 ) -> str:
     lines = []
@@ -429,16 +450,30 @@ def render_person(
         else:
             age_part = f", исполнится {years_word(age)}" if age is not None else ""
             lines += [f"{capitalize(when_phrase(days))}, {WEEKDAYS[target.weekday()]}{age_part}", ""]
+    if note:
+        lines += [note_quote(note), ""]
 
     buttons = []
     if tag:
         buttons.append(url_button("Написать", tag_url(tag)))
+    buttons.append(cb("Изменить заметку" if note else "Добавить заметку", f"note:{b_id}"))
     buttons.append(cb("Удалить", f"del:{b_id}"))
     lines.append(footer(
         "Чтобы исправить, ответьте на это сообщение: `13.11.1988`, `Дмитрий` или `@dima`. "
         f"Дату можно {link('выбрать в календаре', f'edit_date:{b_id}')}."
     ))
     return screen(lines, row(*buttons))
+
+
+def render_note_prompt(b_id: int, name: str, note: str | None) -> str:
+    lines = [f"Заметка про **{md(name)}**", ""]
+    if note:
+        lines += [note_quote(note), "", "Пришлите новый текст — он заменит этот.", ""]
+    else:
+        lines += ["Напишите, что не хочется забыть: идею подарка, размер, что любит.", ""]
+    lines.append(footer("Заметка видна в карточке и приходит вместе с напоминанием о дне рождения."))
+    buttons = [cb("Удалить заметку", f"note_del:{b_id}")] if note else []
+    return screen(lines, row(*buttons) if buttons else "", back_row())
 
 
 def render_deleted(b_id: int, name: str) -> str:
@@ -589,7 +624,7 @@ def render_import_prompt() -> str:
         "",
         "<details><summary>Формат файла</summary>\n\n"
         "```json\n"
-        '[{"name": "Иван", "date": "15.08.1990", "tag": "@ivan"},\n'
+        '[{"name": "Иван", "date": "15.08.1990", "tag": "@ivan", "note": "Книга про горы"},\n'
         ' {"name": "Маша", "date": "03.08"}]\n'
         "```\n"
         "</details>",

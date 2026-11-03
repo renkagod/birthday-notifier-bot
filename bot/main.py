@@ -35,10 +35,13 @@ from bot.database import (
     find_birthday_id,
     find_message,
     get_birthdays_for_user,
+    get_note,
+    get_notes_for_user,
     get_user_birthday,
     get_user_settings,
     init_db,
     remember_message,
+    set_note,
     update_birthday_date_by_id,
     update_birthday_info_by_id,
     update_user_settings,
@@ -71,6 +74,7 @@ LEGACY_CANCEL_TEXT = "❌ Отмена"
 TAG_RE = re.compile(r"@\w{1,32}")
 NO_TAG = {"без тега", "убрать тег", "-"}
 DAYS_RE = re.compile(r"(?:за\s*)?(\d{1,3})(?:\s*(?:дн\w*|день))?")
+NOTE_RE = re.compile(r"(?:заметка|note)\s*[:—-]\s*(.+)", re.IGNORECASE | re.DOTALL)
 STALE = "Этот шаг устарел, начните заново."
 
 BOT_COMMANDS = [
@@ -89,8 +93,9 @@ LEGACY_SETTINGS = {"menu_settings", "set_time", "set_intervals"}
 
 # Last deleted and last edited records, so "Вернуть" works for a while (lost on restart).
 UNDO_LIMIT = 500
-deleted: OrderedDict[tuple[int, int], tuple[str, str, str | None]] = OrderedDict()
-edited: OrderedDict[tuple[int, int], tuple[str, str, str | None]] = OrderedDict()
+# Values are (name, date, tag, note).
+deleted: OrderedDict[tuple[int, int], tuple[str, str, str | None, str | None]] = OrderedDict()
+edited: OrderedDict[tuple[int, int], tuple[str, str, str | None, str | None]] = OrderedDict()
 
 
 def keep(store: OrderedDict, key, value) -> None:
@@ -107,6 +112,7 @@ class AppStates(StatesGroup):
     confirm_replace = State()
     editing_name = State()    # pre-reply interface, kept for in-flight sessions
     editing_date = State()
+    noting = State()          # waiting for the text of a note
     settings = State()        # reminders open: a typed time or number of days applies
     importing = State()
 
@@ -203,7 +209,7 @@ async def show_person(target, state: FSMContext, b_id, *, notice=None, added=Fal
     if added:
         text = screens.render_added(b_id, name, b_date, tag, today())
     else:
-        text = screens.render_person(b_id, name, b_date, tag, today(), notice=notice)
+        text = screens.render_person(b_id, name, b_date, tag, today(), note=get_note(b_id), notice=notice)
     sent = await show(target, text, new=new)
     if sent:
         remember_message(user_id, sent.message_id, "person", b_id)
@@ -295,9 +301,31 @@ async def apply_person_reply(message: Message, state: FSMContext, b_id: int, tex
         return await show(message, f"**{screens.md(name)}** уже есть в списке. Выберите другое имя.")
     if date_tuple:
         update_birthday_date_by_id(b_id, stored_date(*date_tuple))
-    keep(edited, (user_id, b_id), (old_name, old_date, old_tag))
+    keep(edited, (user_id, b_id), (old_name, old_date, old_tag, get_note(b_id)))
     await show_person(message, state, b_id,
                       notice=f"Исправил. {screens.link('Вернуть как было', f'revert:{b_id}')}")
+
+
+def clean_note(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+async def save_note(message: Message, state: FSMContext, b_id: int, text: str):
+    user_id = message.from_user.id
+    row = get_user_birthday(b_id, user_id)
+    if not row:
+        await state.clear()
+        return await show(message, "Этой записи уже нет.")
+    note = clean_note(text)
+    if not note:
+        return await show(message, "Пустая заметка. Напишите текст или нажмите «Отмена».")
+    if len(note) > screens.MAX_NOTE_LENGTH:
+        return await show(message, f"Заметка слишком длинная: не больше {screens.MAX_NOTE_LENGTH} символов.")
+    old_note = get_note(b_id)
+    keep(edited, (user_id, b_id), (row[2], row[3], row[4], old_note))
+    set_note(b_id, note)
+    undo = screens.link("Вернуть как было" if old_note else "Отменить", f"revert:{b_id}")
+    await show_person(message, state, b_id, notice=f"Записал заметку. {undo}")
 
 
 async def apply_settings_text(message: Message, state: FSMContext, text: str) -> bool:
@@ -333,7 +361,12 @@ def replied_ref(message: Message) -> dict | bool:
 @dp.message(F.text, ~F.text.startswith("/"), replied_ref)
 async def msg_reply(message: Message, state: FSMContext, ref: tuple):
     text = " ".join(message.text.split())
+    if ref[0] == "note":
+        return await save_note(message, state, ref[1], message.text)
     if ref[0] == "person":
+        note = NOTE_RE.fullmatch(message.text.strip())
+        if note:
+            return await save_note(message, state, ref[1], note.group(1))
         return await apply_person_reply(message, state, ref[1], text)
     if await apply_settings_text(message, state, text):
         return
@@ -433,7 +466,7 @@ async def cb_delete(callback: CallbackQuery, state: FSMContext):
         return await show(callback, "Этой записи уже нет.")
     _, user_id, name, b_date, tag = row
     delete_birthday_by_id(b_id)
-    keep(deleted, (user_id, b_id), (name, b_date, tag))
+    keep(deleted, (user_id, b_id), (name, b_date, tag, get_note(b_id)))
     await show(callback, screens.render_deleted(b_id, name))
 
 
@@ -445,12 +478,12 @@ async def cb_restore(callback: CallbackQuery, state: FSMContext, callback_answer
         callback_answer.text = "Вернуть уже нельзя"
         callback_answer.show_alert = True
         return
-    name, b_date, tag = saved
+    name, b_date, tag, note = saved
     if find_birthday_id(user_id, name) is not None:
         callback_answer.text = f"{name} уже снова в списке"
         callback_answer.show_alert = True
         return
-    b_id = add_birthday(user_id, name, b_date, tag)
+    b_id = add_birthday(user_id, name, b_date, tag, note)
     await show_person(callback, state, b_id, notice="Вернул.", new=False)
 
 
@@ -473,7 +506,7 @@ async def cb_revert(callback: CallbackQuery, state: FSMContext, callback_answer:
         callback_answer.text = "Вернуть уже нельзя"
         callback_answer.show_alert = True
         return
-    name, b_date, tag = saved
+    name, b_date, tag, note = saved
     try:
         update_birthday_info_by_id(b_id, name, tag)
     except sqlite3.IntegrityError:
@@ -481,6 +514,7 @@ async def cb_revert(callback: CallbackQuery, state: FSMContext, callback_answer:
         callback_answer.show_alert = True
         return
     update_birthday_date_by_id(b_id, b_date)
+    set_note(b_id, note)
     await show_person(callback, state, b_id, notice="Вернул как было.", new=False)
 
 
@@ -494,6 +528,40 @@ async def cb_edit_date(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AppStates.picking)
     await state.update_data(edit_b_id=b_id, name=row[2], calendar_mode="edit")
     await show(callback, screens.render_decade_picker(row[2], datetime.date.today().year), new=True)
+
+
+@dp.callback_query(F.data.startswith("note:"))
+async def cb_note(callback: CallbackQuery, state: FSMContext):
+    user_id, b_id = callback.from_user.id, cb_id(callback.data)
+    row = get_user_birthday(b_id, user_id)
+    if not row:
+        return await show(callback, "Этой записи уже нет.")
+    await state.clear()
+    await state.set_state(AppStates.noting)
+    await state.update_data(note_b_id=b_id)
+    sent = await show(callback, screens.render_note_prompt(b_id, row[2], get_note(b_id)), new=True)
+    if sent:
+        remember_message(user_id, sent.message_id, "note", b_id)
+
+
+@dp.callback_query(F.data.startswith("note_del:"))
+async def cb_note_delete(callback: CallbackQuery, state: FSMContext):
+    user_id, b_id = callback.from_user.id, cb_id(callback.data)
+    row = get_user_birthday(b_id, user_id)
+    if not row:
+        return await show(callback, "Этой записи уже нет.")
+    keep(edited, (user_id, b_id), (row[2], row[3], row[4], get_note(b_id)))
+    set_note(b_id, None)
+    await show_person(callback, state, b_id, new=False,
+                      notice=f"Заметку удалил. {screens.link('Вернуть', f'revert:{b_id}')}")
+
+
+@dp.message(AppStates.noting, F.text, ~F.text.startswith("/"))
+async def msg_note(message: Message, state: FSMContext):
+    b_id = (await state.get_data()).get("note_b_id")
+    if b_id is None:
+        return await route_text(message, state)
+    await save_note(message, state, b_id, message.text)
 
 
 # Flows started on the previous interface: a typed name or date still applies.
@@ -692,7 +760,7 @@ async def cb_day(callback: CallbackQuery, state: FSMContext):
         b_id = data["edit_b_id"]
         row = get_user_birthday(b_id, callback.from_user.id)
         if row:
-            keep(edited, (callback.from_user.id, b_id), (row[2], row[3], row[4]))
+            keep(edited, (callback.from_user.id, b_id), (row[2], row[3], row[4], get_note(b_id)))
             update_birthday_date_by_id(b_id, stored_date(day, month, year))
         return await show_person(callback, state, b_id, new=False,
                                  notice=f"Исправил. {screens.link('Вернуть как было', f'revert:{b_id}')}")
@@ -772,8 +840,8 @@ async def msg_settings_text(message: Message, state: FSMContext):
 
 # --- Backup ---
 
-def normalize_import_item(item) -> tuple[str, str, str | None] | None:
-    """(name, stored date, tag) for a valid backup entry, else None."""
+def normalize_import_item(item) -> tuple[str, str, str | None, str | None] | None:
+    """(name, stored date, tag, note) for a valid backup entry, else None."""
     if not isinstance(item, dict):
         return None
     name = " ".join(str(item.get("name") or "").split())
@@ -788,7 +856,9 @@ def normalize_import_item(item) -> tuple[str, str, str | None] | None:
         return None
     tag = item.get("tag")
     tag = tag if isinstance(tag, str) and TAG_RE.fullmatch(tag) else None
-    return name, raw_date, tag
+    note = item.get("note")
+    note = clean_note(note)[:screens.MAX_NOTE_LENGTH] if isinstance(note, str) else ""
+    return name, raw_date, tag, note or None
 
 
 @dp.callback_query(F.data.in_({"backup", "menu_backup"}))
@@ -805,10 +875,14 @@ async def cb_export(callback: CallbackQuery, callback_answer: CallbackAnswer):
         callback_answer.text = "Список пуст, выгружать нечего"
         callback_answer.show_alert = True
         return
+    notes = get_notes_for_user(callback.from_user.id)
     user_data = []
-    for _id, name, b_date, tag in sort_by_name(birthdays):
+    for b_id, name, b_date, tag in sort_by_name(birthdays):
         date_out = b_date[:5] if b_date.endswith(f".{YEARLESS_YEAR}") else b_date
-        user_data.append({"name": name, "date": date_out, "tag": tag})
+        entry = {"name": name, "date": date_out, "tag": tag}
+        if b_id in notes:
+            entry["note"] = notes[b_id]
+        user_data.append(entry)
     json_data = json.dumps(user_data, ensure_ascii=False, indent=2)
     stamp = datetime.date.today().isoformat()
     file = BufferedInputFile(json_data.encode("utf-8"), filename=f"birthdays_{stamp}.json")
@@ -843,12 +917,12 @@ async def msg_import(message: Message, state: FSMContext):
         if not parsed:
             skipped += 1
             continue
-        name, b_date, tag = parsed
+        name, b_date, tag, note = parsed
         if find_birthday_id(user_id, name) is None:
             added += 1
         else:
             updated += 1
-        add_birthday(user_id, name, b_date, tag)
+        add_birthday(user_id, name, b_date, tag, note)
     await state.clear()
     await show(message, screens.render_import_result(added, updated, skipped))
 

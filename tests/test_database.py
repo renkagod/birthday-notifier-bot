@@ -118,3 +118,31 @@ def test_message_refs_for_replies(temp_db):
     assert find_message(5, 100) == ("person", 7)
     assert find_message(5, 101) == ("settings", None)
     assert find_message(6, 100) is None
+
+
+def test_note_survives_update_and_replace(temp_db):
+    from bot.database import get_note, set_note
+
+    b_id = add_birthday(1, "Dana", "04.04.1994", None)
+    set_note(b_id, "Книга про горы\nРазмер M")
+    assert get_note(b_id) == "Книга про горы\nРазмер M"
+
+    assert add_birthday(1, "Dana", "05.04.1994", "@dana") == b_id
+    assert get_note(b_id) == "Книга про горы\nРазмер M"
+
+    add_birthday(1, "Dana", "05.04.1994", "@dana", "Новая идея")
+    assert get_note(b_id) == "Новая идея"
+
+    set_note(b_id, "")
+    assert get_note(b_id) is None
+
+
+def test_notes_for_user(temp_db):
+    from bot.database import get_notes_for_user, set_note
+
+    a = add_birthday(1, "A", "01.01.1990", None)
+    add_birthday(1, "B", "02.01.1990", None)
+    c = add_birthday(2, "C", "03.01.1990", None, "чужая")
+    set_note(a, "своя")
+    assert get_notes_for_user(1) == {a: "своя"}
+    assert get_notes_for_user(2) == {c: "чужая"}
